@@ -132,16 +132,36 @@ major incident.
 
 ### Negative cases — must NOT be declared incidents
 
-| summary | tickets | expected classification |
-|---|---:|---|
-| Shared drive access | 44 | `recurring_known_error` |
-| Printer offline | 43 | `recurring_known_error` |
-| Mailbox full | 40 | `recurring_known_error` |
-| Software install request | 40 | `recurring_known_error` |
-| Guest wifi issue | 40 | `recurring_known_error` |
-| Laptop running slow | 38 | `recurring_known_error` |
-| Keyboard replacement | 34 | `recurring_known_error` |
-| Monitor flickering | 28 | `recurring_known_error` |
+**Exactly 11 groups** at `recurring_error_min_count = 20`. Counts are *unlinked* tickets only
+(members of `incident_problem_links` are excluded), grouped by exact `Summary`, span > 3 days.
+
+| summary | unlinked tickets | span (days) |
+|---|---:|---:|
+| Shared drive access | 44 | 23 |
+| Printer offline | 43 | 23 |
+| Mailbox full | 40 | 23 |
+| Guest wifi issue | 40 | 23 |
+| Software install request | 40 | 22 |
+| Laptop running slow | 38 | 23 |
+| Keyboard replacement | 34 | 23 |
+| Password reset needed | 33 | 22 |
+| MFA device lost | 31 | 23 |
+| Monitor flickering | 28 | 22 |
+| Network issue | 22 | 21 |
+
+`VPN drops after update` (17) falls below the threshold — it should appear as an emergent
+cluster with action `monitor`, not as a recurring known error.
+
+Sensitivity, in case the threshold is tuned: `>=20 → 11` · `>=25 → 10` · `>=30 → 9` · `>=34 → 7`.
+
+> **Correction (3 Aug).** An earlier version of this file listed 8 groups. That was wrong — it
+> was built from a truncated listing and omitted `Password reset needed`, `MFA device lost` and
+> `Network issue`. The correct count at threshold 20 is **11**.
+>
+> Note that `Password reset needed` and `MFA device lost` each contain a few tickets that *are*
+> in `incident_problem_links` (as `duplicates` pairs). Those tickets are excluded from the
+> counts above, but the summary group still qualifies on its remaining unlinked tickets — do
+> not drop an entire summary group merely because some of its tickets are linked.
 
 **A run that declares any of these a major incident has failed**, regardless of how well it
 handles the two real clusters. This is the primary thing this fixture tests.
@@ -152,12 +172,12 @@ handles the two real clusters. This is the primary thing this fixture tests.
 
 ```
 clusters                 : 2
-  declare_major_incident : 2
+  declare_major_incident : 2   (both source='linked')
 members                  : 23 + 7
 linkage_conflict_count   : 0
 duplicates               : 3
-recurring_known_errors   : 8   (>= 28 tickets each, over ~23 days)
-false major incidents    : 0   <-- the one that matters
+recurring_known_errors   : 11  (at recurring_error_min_count = 20)
+inferred major incidents : 0   <-- the one that matters
 ```
 
 ---
