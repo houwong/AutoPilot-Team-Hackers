@@ -198,9 +198,20 @@ should match. Verify against [`round2-op5-test-fixture.md`](round2-op5-test-fixt
 >
 > **Inputs (all editable at runtime):**
 > - `flood_threshold_count` (number, required). Default: `5`. Minimum related tickets before a cluster is treated as a candidate major incident.
-> - `flood_window_minutes` (number, required). Default: `20`. Time window for detecting an emergent flood.
+> - `flood_window_minutes` (number, required). Default: `120`. Time window for detecting an emergent flood. **Only applied to tickets whose `Created` carries a real time of day — see the warning below.**
 > - `correlation_confidence_threshold` (number, required). Default: `0.7`. Minimum confidence to infer an unlinked cluster.
 > - `include_relationship_types` (textarea, required). Default: `is caused by, relates to`
+> - `recurring_error_min_count` (number, required). Default: `20`. At or above this many tickets sharing a signature over more than 3 days, classify as a recurring known error, never as an incident.
+> - `as_of` (text, optional). ISO-8601 instant. Use `2026-07-25T00:00:00Z` for demos — after both seeded incidents.
+>
+> **⚠️ Time windows do not discriminate on this data.** 387 of 460 `Created` values are exactly
+> `00:00` (date-only), so every routine ticket raised on the same date looks simultaneous. The
+> tightest window holding 5 tickets is **0 minutes** for eight different routine summaries, while
+> the two genuine incidents measure 24 and 563 minutes. A naive flood window declares eight false
+> incidents and ranks the real ones last. Apply the window test **only** to tickets with a
+> non-midnight `Created`; for date-only tickets, rely on explicit linkage and shared
+> `Components` instead. Full measurements in
+> [`round2-op6-test-fixture.md`](round2-op6-test-fixture.md).
 >
 > **Steps.**
 > 1. Fetch `issues`, `incident_problem_links`, `users_directory`, `team_roster` from Supabase in parallel.
@@ -215,10 +226,17 @@ should match. Verify against [`round2-op5-test-fixture.md`](round2-op5-test-fixt
 >    carrying an `INC-` label but no link row, or vice versa — set `linkage_conflict = true`
 >    rather than silently preferring one. Those conflicts are real Insights material.
 >    `source = "linked"`.
-> 3. **Emergent clusters.** Among tickets *not* present in `incident_problem_links`, use the LLM
->    to group by semantic similarity of `Summary` + `Description` + `Components`, restricted to
->    tickets created within `flood_window_minutes` of each other. Assign each group a confidence
->    score; discard those below `correlation_confidence_threshold`. `source = "inferred"`.
+> 3. **Emergent clusters.** Among tickets *not* present in `incident_problem_links`, group by
+>    semantic similarity of `Summary` + `Description` + `Components`. Then split the candidates:
+>    - **Recurring known error** — at least `recurring_error_min_count` tickets spread over more
+>      than 3 days. Classify as `recurring_known_error` with an action path of "author a KB
+>      article or create a policy". **Never** `declare_major_incident`. Eight such patterns exist
+>      (Shared drive access ×44, Printer offline ×43, Mailbox full ×40, and five more).
+>    - **Emergent incident** — a genuine burst. Apply the `flood_window_minutes` test **only to
+>      tickets whose `Created` carries a non-midnight time**; date-only tickets all read as
+>      00:00 and would cluster spuriously. Require a shared `Components` value as corroboration.
+>      Assign a confidence score and discard anything below
+>      `correlation_confidence_threshold`. `source = "inferred"`.
 > 4. **Size the blast radius** for every cluster: ticket count, distinct reporters, VIP count
 >    (via `users_directory.x_vip`), affected assignment groups, earliest and latest ticket time.
 > 5. **Recommend an action** per cluster: `declare_major_incident` when count ≥
