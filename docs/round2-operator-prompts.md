@@ -85,7 +85,33 @@ steps match the "Steps" section before publishing.
 **Why the cross-check matters:** every `discrepancy: true` row is free material for the AI
 Insights layer — "N tickets carry an SLA status that disagrees with business-hours reality."
 
-### Known failure modes — observed in the first build, 3 Aug
+### Known failure modes — five builds, five defects, all silent
+
+> **Operator 5 passed on build 5** (3 Aug): all eight fixture tickets exact on elapsed
+> minutes, SLA state and `breach_at`.
+
+The single most important lesson for Operators 6 and 7: **not one of these five defects threw
+an error.** Every build produced confident, well-formatted, plausible output. Four of the five
+would have shipped unnoticed without a fixture of known-correct values to compare against.
+
+| # | Defect | How it looked | How it was caught |
+|---|---|---|---|
+| 1 | `as_of` ignored, used wall-clock now | 8 Breached, 0 At risk — a plausible backlog | Every value exactly 281 min above reference |
+| 2 | `03/07/2026` parsed month-first | One large number among large numbers | 215081 vs 45161 on ITSM-2091 |
+| 3 | Stated-SLA column never fetched | "0 discrepancies" — looked like agreement | Empty column + fixture said 6 |
+| 4 | 24×7 rule lost, fell back to 8h days | Totals still read 6 discrepancies | Three Remote values changed |
+| 5 | Always-open day = 1439 min | Off by 8–17 min, invisible at a glance | Deficit equalled the day count exactly |
+
+Defects 3 and 4 are the instructive pair. **#3 passed by comparing empty to empty**, so
+"0 discrepancies" read as success. **#4 left the summary totals correct while three underlying
+values were wrong**, because a ticket that flipped Breached → Within SLA still disagreed with
+its stated status. *Never validate on summary counts — check every row.*
+
+Build fixtures for Operators 6 and 7 **before** wiring them.
+
+---
+
+### The five defects in detail — observed 3 Aug
 
 The first generated Operator 5 matched the reference engine **to the minute on 7 of 8 tickets**
 across four regions, two timezones, the Penang holiday and 24×7 cover. Business-hours

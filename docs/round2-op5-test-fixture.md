@@ -5,6 +5,14 @@ Every row below is a real record in Supabase. Expected values were produced by
 
 If Operator 5 disagrees with this table, the operator is wrong.
 
+> ## ✅ PASSED — 3 Aug 2026, build 5
+> All eight tickets match exactly on **elapsed minutes**, **SLA state** and **breach_at**.
+> Totals: 6 Breached · 2 Within SLA · 0 At risk · 6 discrepancies · 0 missing.
+> `breach_at` is reported in UTC and converts exactly to the region wall-clock times below.
+>
+> It took **five builds and five defects to get here — every one of them silent.** See
+> [the failure-mode log](round2-operator-prompts.md#known-failure-modes--observed-in-the-first-build-3-aug).
+
 ---
 
 ## ⚠️ Read this before testing: `as_of` is mandatory
