@@ -82,13 +82,15 @@ mapping takes `prioritized_tickets[0]` and discards the rest.
 our dataset. Queue mode is a redesign of the orchestrator's entry path, not an add-on. Budget
 real time for it (Phase 2).
 
-### Gap 3 — all six new Round 2 tables are unused
-In use: `issues`, `users_directory`, `knowledge_base`, `assets_access` (the Round 1 four).
-Unused: `Ticket_Comments`, `CSAT_Surveys`, `Change_Requests`, `Incident_Problem_Links`,
-`SLA_Calendar`, `Team_Roster`. Each maps to a seeded trap.
+### Gap 3 — the operators still read only the Round 1 four tables
+The Round 2 data is now **loaded** (see §3.1), but no operator reads the six new tables yet.
+In use: `issues`, `users_directory`, `knowledge_base`, `assets_access`.
+Not yet read: `ticket_comments`, `csat_surveys`, `change_requests`, `incident_problem_links`,
+`sla_calendar`, `team_roster`. Each maps to a seeded trap, and each is claimed by one of
+Operators 5–7.
 
 Related: Op1 is instructed *"Use customfield_10030 exactly… Do not recalculate SLA hours."*
-Correct for Round 1; `SLA_Calendar` was added in Round 2 precisely to require business-hours
+Correct for Round 1; `sla_calendar` was added in Round 2 precisely to require business-hours
 computation. See Operator 5.
 
 ### Gap 4 — no run history
@@ -162,6 +164,40 @@ Read endpoints that work on this host (verified): `GET /workflows`,
 SSE events: `activity-run`, `workflow-run`, `thinking`, `result`, `error`.
 Rate limit: **60 req/min per IP** — batch the incident flood, don't fire per ticket.
 
+### 3.1 The data layer — loaded 3 Aug ✅
+
+Supabase project **`stalled-ticket-resolver`** (`pkwvlnvxmawvgqzqvkcg`, ap-southeast-1).
+All 10 tables, 885 rows. RLS is disabled on every table, which is what lets the Auto native
+Supabase integration read and write without extra policy work.
+
+| Table | Rows | | Table | Rows |
+|---|---:|---|---|---:|
+| `issues` | 460 | | `ticket_comments` | 277 |
+| `users_directory` | 97 | | `csat_surveys` | 87 |
+| `assets_access` | 173 | | `change_requests` | 13 |
+| `knowledge_base` | 38 | | `incident_problem_links` | 31 |
+| | | | `sla_calendar` | 5 |
+| | | | `team_roster` | 12 |
+
+Four facts the operators depend on:
+
+- **`row_id` continuity is preserved.** 1 → `ITSM-2000`, 180 → `ITSM-2179`, 181 → `ITSM-2180`.
+  Round 1 tickets kept their original `row_id`s, so Op3's update-by-`row_id` still works.
+- **Round 1 rows were back-filled, not appended past.** 162 of the original 180 now carry
+  `x_channel`. A plain append would have left them null and made Op1 triage old and new tickets
+  differently.
+- **460 tickets, not 462.** The CSV contains two byte-identical duplicate rows (`ITSM-2186`,
+  `ITSM-2219`) which were deduped, so every ticket has exactly one `row_id`.
+- **⚠️ `issues."Created"` is stored as `text`**, while `Updated` and `Due date` are `timestamptz`.
+  Operator 5 computes elapsed business minutes from `Created` and **must cast explicitly**.
+
+Two independent incident-linkage mechanisms exist, and Operator 6 should use both:
+- `issues.linked_incident` → `INC-9001` (24 tickets), `INC-9002` (7)
+- `incident_problem_links.parent_incident_key` → `ITSM-2180` (22 children), `ITSM-2199` (6)
+
+They describe the same clusters by different names, so each can cross-validate the other —
+exactly the kind of non-trivial correlation the Insights criterion rewards.
+
 ### Our backend's own contract
 ```
 POST /api/agent/runs              → opens SSE, persists agent_run
@@ -193,21 +229,28 @@ Branches `agent/*` and `cc/*`, merged to `main` daily. `main` must always start 
 
 ## 5. Phases
 
-### Phase 0 — Mon 3 Aug (remainder of today)
-**Ve Song**
-- [ ] **Publish a stable version of all 5 workflows** — everything is `isDraft: true`. This is
-      the rollback point before any rewiring. Do this before touching anything.
-- [ ] Load the 6 new tables into Supabase: `ticket_comments`, `csat_surveys`,
-      `change_requests`, `incident_problem_links`, `sla_calendar`, `team_roster`
-- [ ] Confirm `POST /workflow-runs/execute` works with **multipart/form-data** + the 4 headers
+### Phase 0 — Mon 3 Aug (today)
 
-**Chee Hou**
-- [ ] `app/models/` + one Alembic migration for the 7 tables (§3)
-- [ ] Workflow IDs into `.env`
-- [ ] `app/services/sla.py` — business-hours SLA from `sla_calendar` (timezone + holidays),
-      with unit tests covering a holiday and an after-hours case
+**Done ✅**
+- [x] **Round 2 data loaded into Supabase** — all 10 tables, 885 rows, `row_id` continuity
+      preserved, Round 1 rows back-filled with the new columns (§3.1)
+- [x] **Line endings pinned** (`.gitattributes`). The backend had been crash-looping for two
+      hours on `start_gunicorn.sh: 20: : not found` — `core.autocrlf=true` rewrote the entrypoint
+      to CRLF and the container's `sh` choked on it. Round 2 requires a clean clone to work, and
+      any judge cloning on Windows would have hit the same failure.
+- [x] **Stack verified running** — postgres, backend and frontend all healthy;
+      `/api/health` returns `{"status":"ok"}`, dashboard and API docs both 200
 
-**Done when:** stable versions exist, Supabase has all 10 tables, SLA function passes tests.
+**Still open**
+- [ ] **Ve Song — publish a stable version of all 5 workflows.** Everything is `isDraft: true`.
+      This is the rollback point before tomorrow's rewiring. Do it before touching anything.
+- [ ] **Ve Song — add Ve Song as a repo collaborator** on `AutoPilot-Team-Hackers`
+- [ ] **Chee Hou — `app/models/` + one Alembic migration** for the 7 Command Center tables (§3)
+- [ ] **Chee Hou — workflow IDs into `.env`** (§1)
+- [ ] **Chee Hou — `app/services/sla.py`**: business-hours SLA from `sla_calendar`, with unit
+      tests covering a holiday and an after-hours case. Remember `Created` is `text` — cast it.
+
+**Done when:** stable versions exist and the SLA function passes tests.
 
 ---
 

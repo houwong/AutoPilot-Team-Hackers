@@ -36,10 +36,12 @@ steps match the "Steps" section before publishing.
 > 3. **Parse the calendar row.** `business_hours` is either `HH:MM-HH:MM Mon-Fri` or the literal
 >    `24x7 follow-the-sun`. `holiday_dates` is a semicolon-separated list of `YYYY-MM-DD`.
 >    `timezone` is an IANA name.
-> 4. **Compute elapsed business minutes** from `issues.Created` to now (or to `Resolution` when
+> 4. **Compute elapsed business minutes** from `issues."Created"` to now (or to `Resolution` when
 >    resolved), counting only minutes that fall inside the business window, on a working weekday,
 >    and not on a holiday. For `24x7 follow-the-sun`, count every minute with no exclusions.
 >    All arithmetic in the region's timezone, then converted to UTC for output.
+>    **`issues."Created"` is stored as `text`, not a timestamp — parse it explicitly.**
+>    (`Updated` and `Due date` are `timestamptz`; only `Created` needs the cast.)
 > 5. **Determine VIP** from `users_directory.x_vip` matched on `issues.Reporter`. Select the
 >    matching target from `sla_targets`.
 > 6. **Classify.** `Breached` when elapsed ≥ target; `At risk` when remaining ≤
@@ -86,8 +88,16 @@ Insights layer — "N tickets carry an SLA status that disagrees with business-h
 >
 > **Steps.**
 > 1. Fetch `issues`, `incident_problem_links`, `users_directory`, `team_roster` from Supabase in parallel.
-> 2. **Explicit clusters.** Group `incident_problem_links` by `parent_incident_key`, keeping rows
->    whose `relationship` appears in `include_relationship_types`. Each group is a known cluster;
+> 2. **Explicit clusters — two independent sources, use both.**
+>    a. Group `incident_problem_links` by `parent_incident_key`, keeping rows whose
+>       `relationship` appears in `include_relationship_types`. Parents present in the data are
+>       `ITSM-2180` (22 children) and `ITSM-2199` (6).
+>    b. Group `issues` by the non-null `linked_incident` label. Values present are `INC-9001`
+>       (24 tickets) and `INC-9002` (7).
+>    These describe the same clusters under different names. **Reconcile them** and report
+>    `linked_incident_label` alongside `parent_issue_key`. Where the two disagree — a ticket
+>    carrying an `INC-` label but no link row, or vice versa — set `linkage_conflict = true`
+>    rather than silently preferring one. Those conflicts are real Insights material.
 >    `source = "linked"`.
 > 3. **Emergent clusters.** Among tickets *not* present in `incident_problem_links`, use the LLM
 >    to group by semantic similarity of `Summary` + `Description` + `Components`, restricted to
@@ -104,7 +114,8 @@ Insights layer — "N tickets carry an SLA status that disagrees with business-h
 > **Output (strict JSON):**
 > ```json
 > { "clusters": [{
->     "parent_issue_key": "", "child_issue_keys": [], "source": "linked|inferred",
+>     "parent_issue_key": "", "linked_incident_label": null, "linkage_conflict": false,
+>     "child_issue_keys": [], "source": "linked|inferred",
 >     "ticket_count": 0, "distinct_reporters": 0, "vip_count": 0,
 >     "affected_assignment_groups": [], "first_seen": "", "last_seen": "",
 >     "confidence": 0.0, "recommended_action": "declare_major_incident|attach_to_existing|monitor",
@@ -118,9 +129,11 @@ Insights layer — "N tickets carry an SLA status that disagrees with business-h
 > component or assignment group merely because their text is similar. `duplicates` never become a
 > major incident.
 
-**Note on the data:** the current pack has one large cluster under `ITSM-2180` (18 `is caused by`
-+ 4 `relates to`) and a second under `ITSM-2199` (6), plus 3 `duplicates` pairs. Use these to
-verify, but the logic must hold for clusters it has never seen — a judge may ask for a different case.
+**Note on the data:** one large cluster sits under `ITSM-2180` (18 `is caused by` + 4
+`relates to`) and a second under `ITSM-2199` (6), plus 3 `duplicates` pairs. Separately,
+`issues.linked_incident` labels 24 tickets `INC-9001` and 7 `INC-9002`. Use these to verify —
+but discover them from the data. The logic must hold for clusters it has never seen, because a
+judge may ask for a different case.
 
 ---
 
