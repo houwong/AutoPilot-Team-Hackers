@@ -18,11 +18,17 @@ If Operator 6 disagrees with this document, the operator is wrong.
 > could check — member counts, blast radius, SLA minutes, discrepancy totals — belongs in code
 > with assertions.
 >
-> **Residual limitation:** emergent-cluster member counts come from the LLM step and are not
-> verified against the data (build 3 reported 10 for `VPN drops after update`, which has 17
-> unlinked tickets). This is tolerable because every emergent cluster is capped at `monitor`, so
-> the counts drive no action — but do not feed them into dashboard KPIs or Insights without
-> recomputing them in code first.
+> **Emergent counts now verified too.** Build 3 reported 10 for `VPN drops after update`; the
+> final build reports **17**, the true unlinked count. Emergent cluster sizes are safe to use in
+> Insights.
+>
+> **Regression seen between builds 3 and 5 — worth knowing about.** An edit to the fetch step
+> broke relationship-type filtering so that only `relates to` matched. ITSM-2180 collapsed from
+> 23 members to 4 (its `relates to` count) and ITSM-2199 vanished entirely (it has only
+> `is caused by` links). Duplicates and recurring errors kept reporting 3 and 11 throughout, so
+> the summary still looked healthy. Cause: `"is caused by, relates to"` splits to
+> `["is caused by", " relates to"]` and the leading space broke the comparison. Always
+> `.strip().lower()` both sides, and assert the member counts.
 
 ---
 
