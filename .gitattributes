@@ -1,0 +1,28 @@
+# Line-ending policy.
+#
+# Without this file, Windows checkouts convert LF to CRLF (core.autocrlf=true),
+# which breaks anything executed inside the Linux containers: `sh start_gunicorn.sh`
+# fails with "not found" on every line, and make/Docker misbehave the same way.
+#
+# Judges run this project from a clean clone, possibly on Windows, so the
+# repository must pin its own line endings rather than rely on local git config.
+
+# Everything is LF in the repo and in the working tree.
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF.
+*.ps1  text eol=crlf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+
+# Never touch binaries.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.pdf  binary
+*.xlsx binary
+*.zip  binary
+*.woff  binary
+*.woff2 binary
