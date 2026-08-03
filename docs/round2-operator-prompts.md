@@ -85,6 +85,42 @@ steps match the "Steps" section before publishing.
 **Why the cross-check matters:** every `discrepancy: true` row is free material for the AI
 Insights layer — "N tickets carry an SLA status that disagrees with business-hours reality."
 
+### Known failure modes — observed in the first build, 3 Aug
+
+The first generated Operator 5 matched the reference engine **to the minute on 7 of 8 tickets**
+across four regions, two timezones, the Penang holiday and 24×7 cover. Business-hours
+arithmetic, region-from-reporter resolution and VIP classification were all correct. Three
+things still broke. Add these as explicit instructions:
+
+**1. `as_of` must actually be used.** The run ignored it and used wall-clock now — every
+elapsed value came out exactly 281 minutes above the reference, a constant offset across all
+regions. Result: 8 Breached, 0 At risk, 0 Within SLA. Instruct explicitly:
+
+> *"Evaluate every ticket against the `as_of` instant. When `as_of` is provided you MUST use it
+> as 'now' for all elapsed and remaining calculations. Never substitute the current system
+> time. Echo the effective `as_of` back in the output so the caller can confirm it was applied."*
+
+**2. Dates are day-first.** `ITSM-2091` has `Created = 03/07/2026`. The run read it as
+**7 March** instead of 3 July and returned 215,081 business minutes against a true 45,161 — a
+118-day error on a single ticket. Instruct explicitly:
+
+> *"`Created` is TEXT in three formats: ISO (`2026-07-08 00:00:00`), `Mon DD YYYY`
+> (`Jul 14 2026`), and **DD/MM/YYYY, day first** (`03/07/2026` is 3 July 2026, NOT 7 March).
+> Never interpret a slash date as month-first. The day component in this data reaches 26, which
+> is impossible for a month. If a value matches none of these three, raise an error rather than
+> guessing — a misparsed date silently corrupts every downstream number."*
+
+**3. The discrepancy cross-check must actually compare.** The run reported 0 discrepancies
+while all 8 tickets disagreed with `customfield_10030`. Instruct explicitly:
+
+> *"After computing `computed_sla_state`, read `customfield_10030 (Time to resolution)` as
+> `stated_sla_status` and compare the two strings case-insensitively after trimming. Set
+> `discrepancy = true` whenever they differ, and count them. Expect a high rate: the stated
+> field is a static label written at intake and is never recalculated. Do NOT suppress
+> discrepancies or reconcile them by preferring the stated value."*
+
+Verify every fix against [`round2-op5-test-fixture.md`](round2-op5-test-fixture.md).
+
 ---
 
 ## Operator 6 — Major-Incident Detector
