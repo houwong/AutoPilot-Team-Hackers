@@ -41,18 +41,25 @@ Resolution targets resolve to **1440 min** (VIP) and **2880 min** (non-VIP).
 
 ## Expected output
 
-| issue_key | region | VIP | `Created` (verbatim) | elapsed | target | to_breach | **state** | `customfield_10030` | breach_at |
-|---|---|---|---|---:|---:|---:|---|---|---|
-| ITSM-2000 | Penang | no | `Jul 14 2026` | 2220 | 2880 | +660 | **Within SLA** | Within SLA | 2026-07-21 14:30 |
-| ITSM-2003 | Penang | no | `2026-07-05 00:00:00` | 4770 | 2880 | −1890 | **Breached** | At risk | 2026-07-14 14:30 |
-| ITSM-2004 | Singapore | no | `2026-07-15 00:00:00` | 1800 | 2880 | +1080 | **Within SLA** | Within SLA | 2026-07-22 12:00 |
-| ITSM-2013 | Singapore | yes | `2026-07-09 00:00:00` | 3960 | 1440 | −2520 | **Breached** | At risk | 2026-07-13 15:00 |
-| ITSM-2027 | KL-HQ | yes | `2026-07-15 00:00:00` | 1800 | 1440 | −360 | **Breached** | Within SLA | 2026-07-17 15:00 |
-| ITSM-2036 | Remote | yes | `2026-07-09 00:00:00` | 16080 | 1440 | −14640 | **Breached** | At risk | 2026-07-10 00:00 |
-| ITSM-2091 | Remote | yes | `03/07/2026` | 24720 | 1440 | −23280 | **Breached** | Within SLA | 2026-07-04 00:00 |
-| ITSM-2005 | Remote | no | `2026-07-12 00:00:00` | 11760 | 2880 | −8880 | **Breached** | At risk | 2026-07-14 00:00 |
+| issue_key | region | VIP | `Created` (verbatim) | elapsed | target | to_breach | **state** | `customfield_10030` | discrepancy | breach_at |
+|---|---|---|---|---:|---:|---:|---|---|---|---|
+| ITSM-2000 | Penang | no | `Jul 14 2026` | 2220 | 2880 | +660 | **Within SLA** | Within SLA | — | 2026-07-21 14:30 |
+| ITSM-2003 | Penang | no | `2026-07-05 00:00:00` | 4770 | 2880 | −1890 | **Breached** | At risk | **yes** | 2026-07-14 14:30 |
+| ITSM-2004 | Singapore | no | `2026-07-15 00:00:00` | 1800 | 2880 | +1080 | **Within SLA** | Within SLA | — | 2026-07-22 12:00 |
+| ITSM-2013 | Singapore | yes | `2026-07-09 00:00:00` | 3960 | 1440 | −2520 | **Breached** | At risk | **yes** | 2026-07-13 15:00 |
+| ITSM-2027 | KL-HQ | yes | `2026-07-15 00:00:00` | 1800 | 1440 | −360 | **Breached** | Within SLA | **yes** | 2026-07-17 15:00 |
+| ITSM-2036 | Remote | yes | `2026-07-09 00:00:00` | 16080 | 1440 | −14640 | **Breached** | At risk | **yes** | 2026-07-10 00:00 |
+| ITSM-2091 | Remote | yes | `03/07/2026` | 24720 | 1440 | −23280 | **Breached** | Within SLA | **yes** | 2026-07-04 00:00 |
+| ITSM-2005 | Remote | no | `2026-07-12 00:00:00` | 11760 | 2880 | −8880 | **Breached** | At risk | **yes** | 2026-07-14 00:00 |
 
 `elapsed` and `to_breach` are **business** minutes. `breach_at` is region wall-clock.
+
+**Expected totals: 6 Breached · 2 Within SLA · 0 At risk · 6 discrepancies.**
+
+A run reporting **0 discrepancies** has not read `customfield_10030`. Every one of these eight
+tickets has a non-null value in that column (`Within SLA` or `At risk`, no padding) — verified
+directly in Supabase. See the column-name trap in
+[`round2-operator-prompts.md`](round2-operator-prompts.md#known-failure-modes--observed-in-the-first-build-3-aug).
 
 ---
 

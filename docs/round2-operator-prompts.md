@@ -110,16 +110,32 @@ regions. Result: 8 Breached, 0 At risk, 0 Within SLA. Instruct explicitly:
 > is impossible for a month. If a value matches none of these three, raise an error rather than
 > guessing — a misparsed date silently corrupts every downstream number."*
 
-**3. The discrepancy cross-check must actually compare.** The run reported 0 discrepancies
-while all 8 tickets disagreed with `customfield_10030`. Instruct explicitly:
+**3. The stated-SLA column is not being fetched.** Fixes 1 and 2 landed on the second build —
+all eight elapsed values then matched the reference exactly. But the run still reported
+**0 discrepancies with an empty "Stated Status" column on every row**. It is not comparing
+wrongly; it is reading nothing and calling empty-vs-empty a match.
 
-> *"After computing `computed_sla_state`, read `customfield_10030 (Time to resolution)` as
-> `stated_sla_status` and compare the two strings case-insensitively after trimming. Set
-> `discrepancy = true` whenever they differ, and count them. Expect a high rate: the stated
-> field is a static label written at intake and is never recalculated. Do NOT suppress
-> discrepancies or reconcile them by preferring the stated value."*
+The cause is the column name. It is literally **`customfield_10030 (Time to resolution)`** —
+with a space and parentheses. Asking Supabase for bare `customfield_10030` returns nothing
+silently. Operator 1 gets this right by naming it in full; Operator 5's fetch step does not.
+Verified in Supabase: all eight tickets hold a non-null value (`Within SLA` or `At risk`, no
+padding). Instruct explicitly:
 
-Verify every fix against [`round2-op5-test-fixture.md`](round2-op5-test-fixture.md).
+> *"In the fetch step, select the stated SLA column by its EXACT literal name including the
+> parenthetical suffix: `customfield_10030 (Time to resolution)`. Do not abbreviate it to
+> `customfield_10030` — that column does not exist and returns null silently. Carry the value
+> through as `stated_sla_status`.*
+>
+> *After computing `computed_sla_state`, compare the two strings case-insensitively after
+> trimming, and set `discrepancy = true` whenever they differ. If `stated_sla_status` is null
+> or empty for a ticket, set `stated_sla_missing = true` rather than reporting a match — an
+> empty stated value is never a match. Expect a high discrepancy rate: the stated field is a
+> static label written at intake and never recalculated. Do NOT suppress discrepancies or
+> reconcile them by preferring the stated value."*
+
+**Expected after all three fixes**, on the fixture inputs:
+**6 Breached · 2 Within SLA · 0 At risk · 6 discrepancies.** Only ITSM-2000 and ITSM-2004
+should match. Verify against [`round2-op5-test-fixture.md`](round2-op5-test-fixture.md).
 
 ---
 
