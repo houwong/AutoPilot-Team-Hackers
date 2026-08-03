@@ -30,9 +30,17 @@ steps match the "Steps" section before publishing.
 > **Steps.**
 > 1. Fetch from Supabase `public`, project `stalled-ticket-resolver`, in parallel:
 >    `issues`, `sla_calendar`, `team_roster`, `users_directory`.
-> 2. **Resolve each ticket's region** by joining `issues."customfield_10101 (Assignment group)"`
->    → `team_roster.assignment_group` → `team_roster.region` → `sla_calendar.region`.
->    If no match, use `default_region` and set `region_resolved = false`.
+> 2. **Resolve each ticket's region from the REPORTER, not the assignment group:**
+>    `issues."Reporter"` → `users_directory.display_name` → `users_directory.location`
+>    → `sla_calendar.region`. This join is exact — all 97 users map 1:1 onto the five
+>    calendar regions.
+>    **Do not resolve region via `customfield_10101 (Assignment group)`.** That mapping is
+>    one-to-many and therefore ambiguous: App Support spans KL-HQ, Remote *and* Singapore,
+>    because `team_roster` holds members of the same group in different regions. Using it
+>    picks an arbitrary calendar and produces confidently wrong SLA numbers.
+>    `display_name` is not unique in `users_directory`, so when more than one user matches,
+>    take the first deterministically and set `reporter_ambiguous = true`.
+>    If no match at all, use `default_region` and set `region_resolved = false`.
 > 3. **Parse the calendar row.** `business_hours` is either `HH:MM-HH:MM Mon-Fri` or the literal
 >    `24x7 follow-the-sun`. `holiday_dates` is a semicolon-separated list of `YYYY-MM-DD`.
 >    `timezone` is an IANA name.
@@ -55,7 +63,8 @@ steps match the "Steps" section before publishing.
 > ```json
 > { "evaluated_count": 0,
 >   "tickets": [{
->     "issue_key": "", "row_id": "", "region": "", "timezone": "", "region_resolved": true,
+>     "issue_key": "", "row_id": "", "region": "", "timezone": "",
+>     "region_resolved": true, "reporter_ambiguous": false,
 >     "is_vip": false, "business_hours_rule": "", "target_minutes": 0,
 >     "business_minutes_elapsed": 0, "minutes_to_breach": 0, "breach_at_utc": "",
 >     "computed_sla_state": "Breached|At risk|Within SLA",
@@ -187,6 +196,11 @@ whether a fix is technically safe; Operator 7 decides whether it is *permitted*.
 ---
 
 ## After building
+
+> **Reference implementation.** The Command Center already contains a tested engine for all
+> of this: [`app/services/sla.py`](../app/services/sla.py), with 35 tests in
+> [`tests/test_sla.py`](../tests/test_sla.py). Mirror its behaviour — the parsing rules,
+> the opening-hour clamp and the region join are already verified against the real data.
 
 1. Test each standalone with the seeded cases:
    - Op5 — a `Remote` (24x7) ticket vs a `Penang` ticket spanning `2026-08-31`
