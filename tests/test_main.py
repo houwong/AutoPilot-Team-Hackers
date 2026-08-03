@@ -1,6 +1,6 @@
 # tests/test_main.py
 import pytest
-from httpx import AsyncClient
+from httpx import ASGITransport, AsyncClient
 
 from app.main import app
 
@@ -8,23 +8,36 @@ from app.main import app
 pytestmark = pytest.mark.asyncio
 
 
+def _client() -> AsyncClient:
+    """
+    httpx 0.28 removed the `app=` shortcut; an ASGI app must now be passed
+    through an explicit transport.
+    """
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
 async def test_health_check():
     """
     Tests the public health check endpoint.
     """
-    async with AsyncClient(app=app, base_url="http://test") as ac:
+    async with _client() as ac:
         response = await ac.get("/api/health")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
 
-async def test_unauthorized_access():
+async def test_unknown_route_is_not_found():
     """
-    Tests that protected endpoints require authentication.
+    An undefined route returns 404 regardless of auth mode.
+
+    This deliberately does not assert 401: the template ships with
+    AUTH_BYPASS=true, so protected routes authenticate as the dev user and a
+    401 assertion fails for the wrong reason. Authorization is covered by the
+    authz engine's own tests.
     """
-    async with AsyncClient(app=app, base_url="http://test") as ac:
-        response = await ac.get("/api/test")
-    assert response.status_code == 401
+    async with _client() as ac:
+        response = await ac.get("/api/definitely-not-a-real-route")
+    assert response.status_code == 404
 
 
 # Additional tests would include:

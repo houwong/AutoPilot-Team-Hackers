@@ -30,6 +30,8 @@ services:
       - ./utils:/app/utils
       - ./alembic:/app/alembic
       - ./alembic.ini:/app/alembic.ini
+      - ./tests:/app/tests
+      - ./scripts:/app/scripts
       - document_storage:/app/document_storage
     ports:
       - "127.0.0.1:8001:8000"
