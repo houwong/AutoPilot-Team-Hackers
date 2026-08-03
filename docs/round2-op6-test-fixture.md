@@ -3,6 +3,27 @@
 Expected values computed from the live Supabase data on 3 Aug 2026.
 If Operator 6 disagrees with this document, the operator is wrong.
 
+> ## ✅ PASSED — 3 Aug 2026, build 3
+> 2 clusters (`ITSM-2180` 23 members, `ITSM-2199` 7 members, 0 VIPs each) · 2
+> `declare_major_incident`, both `source=linked` · **0 inferred major incidents** ·
+> 3 duplicates · 11 recurring known errors.
+>
+> **What made the difference:** builds 1 and 2 let the LLM do the counting and returned a
+> cluster of 11 that matched no filter in the data. Build 3 split the step — a deterministic
+> pandas cell computes clusters, duplicates and recurring errors with assertions, and the LLM
+> only proposes emergent clusters and writes rationales. Op5 took five builds with arithmetic
+> inside a model step; Op6 took three.
+>
+> **Rule for Operator 7: LLM steps for judgement, code cells for counting.** Anything a judge
+> could check — member counts, blast radius, SLA minutes, discrepancy totals — belongs in code
+> with assertions.
+>
+> **Residual limitation:** emergent-cluster member counts come from the LLM step and are not
+> verified against the data (build 3 reported 10 for `VPN drops after update`, which has 17
+> unlinked tickets). This is tolerable because every emergent cluster is capped at `monitor`, so
+> the counts drive no action — but do not feed them into dashboard KPIs or Insights without
+> recomputing them in code first.
+
 ---
 
 ## ⚠️ Read first: time-window clustering does not work on this data
