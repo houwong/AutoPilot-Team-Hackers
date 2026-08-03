@@ -7,12 +7,28 @@
 | Phase | Date | Theme |
 |---|---|---|
 | 0 | Mon 3 Aug (today) | Baseline lock + Round 2 data |
-| 1 | Tue 4 Aug | Rewire existing operators + vertical slice |
-| 2 | Wed 5 Aug | Queue mode + policy engine + Workbench |
-| 3 | Thu 6 Aug | CAB approval + Insights + Data Manager |
-| 4 | Fri 7 Aug | Trap coverage + clean-clone hardening |
-| 5 | Sat 8 Aug | Offline build at APU · **code freeze 23:59** |
+| 1 | Tue 4 Aug | **Agent:** rewire + Operator 5 · *plus one thin wire spike* |
+| 2 | Wed 5 Aug | **Agent:** queue mode + Operators 6 & 7 → agent complete |
+| 3 | Thu 6 Aug | **Wire:** backend, policies, Workbench |
+| 4 | Fri 7 Aug | **Wire:** Insights, Data Manager, first full end-to-end |
+| 5 | Sat 8 Aug | Traps, clean clone, rehearsal · **code freeze 23:59** |
 | 6 | Sun 9 Aug | Grand Finale · 10–12 min live showcase |
+
+### Sequencing principle
+**Finish the operators on Auto before wiring the Command Center to them.** The backend binds to
+operator inputs and outputs; wiring against a contract that is still changing means doing the
+work twice.
+
+**The one exception — a thin wire on Tuesday.** Integration is where the surprises live
+(multipart encoding, SSE parsing, auth headers). Waiting until Thursday to discover a problem
+there costs the week. So on Tuesday we prove exactly one path end to end — backend triggers the
+existing orchestrator, consumes the SSE stream, writes one `agent_run` row — and then stop and
+go back to operators. No features, just proof the pipe works.
+
+Chee Hou is not idle during Phases 1–2. Everything on the Command Center side that does **not**
+depend on operator contracts gets built first: DB schema, SLA engine, policy storage and editor
+UI (the five policy inputs are already known from the Round 1 operators), Workbench UI shell,
+Data Manager page. Only the *binding* waits.
 
 ---
 
@@ -195,41 +211,62 @@ Branches `agent/*` and `cc/*`, merged to `main` daily. `main` must always start 
 
 ---
 
-### Phase 1 — Tue 4 Aug · Rewire + vertical slice
-**Ve Song**
+### Phase 1 — Tue 4 Aug · Agent work + thin wire spike
+**Ve Song — operators only**
 - [ ] Rewire `step_5_exec` → `subworkflow_call` Op3
 - [ ] Rewire `step_6_notif_auto` / `_manual` / `_rejected` → `subworkflow_call` Op4
 - [ ] **Operator 5 — SLA & Business-Hours Engine** (new): computes true SLA state from
       `sla_calendar` + timezone + holidays; replaces Op1's read of `customfield_10030`
-- [ ] Confirm all 4 existing operators still pass end-to-end after rewiring
+- [ ] Confirm all 4 existing operators still pass end to end after rewiring
+- [ ] **Freeze and write down each operator's input/output contract** — this is what Chee Hou
+      binds to on Thursday. A contract change after Wednesday costs double.
 
-**Chee Hou**
-- [ ] `auto_client.py` — multipart POST + SSE consumption
-- [ ] `POST /api/agent/runs`; one `operator_execution` row per `activity-run` event
-- [ ] Dashboard wired to live KPIs — **no seeded numbers left anywhere**
+**Chee Hou — the spike, then contract-independent work**
+- [ ] **SPIKE (do first, timebox to the morning):** `auto_client.py` — multipart POST +
+      SSE consumption; `POST /api/agent/runs` writes one `agent_run` row from a real
+      orchestrator run. Prove the pipe, then stop.
+- [ ] `app/services/sla.py` finished and tested against `sla_calendar`
+- [ ] Policy storage + editor UI for the five known inputs (`priority_ranking_order`,
+      `sla_thresholds`, `kb_confidence_threshold`, `stalled_days_threshold`, `routing_mapping_json`)
+- [ ] Workbench UI shell and Data Manager page — layout and states, no live binding yet
 
-**Done when:** 5 operators genuinely invoked, one run visible end to end, dashboard moves.
+**Done when:** 5 operators genuinely invoked on Auto, and exactly one run has been triggered
+from our backend and persisted. No dashboard wiring yet — that is Thursday.
 
 ---
 
-### Phase 2 — Wed 5 Aug · Queue mode + policies + Workbench
-**Ve Song**
+### Phase 2 — Wed 5 Aug · Agent complete
+**Ve Song — operators only**
 - [ ] **Orchestrator queue mode** — process a batch, not `prioritized_tickets[0]`
 - [ ] **Operator 6 — Major-Incident Detector**: clusters via `incident_problem_links`, opens
       parent INC-9001, drives comms until closed
+- [ ] **Operator 7 — Change/CAB Approval**: gates production changes on
+      `change_requests.cab_approval_required`; sits in front of execute
+- [ ] Retries on operator failure; confirm Op2's parallel fan-out still holds under queue mode
 - [ ] Implement the two-run split (§2.1): Run A ends at analysis, Run B executes on approval
+- [ ] **Run the agent repeatedly against real tickets** — Thursday's insights need history
 
 **Chee Hou**
-- [ ] Policy engine — evaluates before the action, every call logged to `policy_evaluation`
-- [ ] Policies page: **no-code editing** of the five existing workflow inputs; saved values
-      passed to Auto on the next run
-- [ ] Workbench: queue, detail with correlated tickets + recommendation, Approve/Modify/Reject,
-      resolution triggers Run B
+- [ ] Policy engine internals: evaluation, priority ordering, `policy_evaluation` logging
+- [ ] Workbench interactions: approve / modify / reject, decision recorded
+- [ ] Insight computation functions, unit-tested against fixture data
 
-**Ship these 3 policies minimum** (all map to existing workflow inputs):
-1. *Auto-remediate only where `x_auto_safe` and confidence ≥ `kb_confidence_threshold`* — threshold editable
-2. *VIP within N business-minutes of breach escalates to on-call* — both values editable
-3. *Production changes require CAB approval when `cab_approval_required`* — toggleable
+**Done when: the agent is finished.** 7 operators, queue mode, branching, retries — and it can
+be demonstrated end to end **on Auto alone, with no Command Center involved.** This is the
+milestone the whole week hinges on. If it slips, drop Operator 7 rather than letting it slide.
+
+---
+
+### Phase 3 — Thu 6 Aug · Wire the Command Center
+Operator contracts are frozen. Now bind everything.
+
+**Together — this is a joint day, not a split one**
+- [ ] Backend triggers the orchestrator with **policy values from the database** as workflow inputs
+- [ ] SSE stream → one `operator_execution` row per `activity-run`; `error` → `exception_item`
+- [ ] Dashboard live: backlog by SLA risk, MTTR, auto-resolution rate, open incidents, CSAT
+      — **no seeded numbers left anywhere**
+- [ ] Exceptions route to our Workbench with full context and the agent's recommendation
+- [ ] Resolution in the Workbench triggers Run B
 
 **Done when:** you lower `kb_confidence_threshold` from 0.85 to 0.50 in the browser, re-run the
 same ticket, it auto-resolves instead of escalating, and both evaluations appear in the log.
@@ -237,25 +274,23 @@ same ticket, it auto-resolves instead of escalating, and both evaluations appear
 
 ---
 
-### Phase 3 — Thu 6 Aug · CAB, Insights, Data Manager
-**Ve Song**
-- [ ] **Operator 7 — Change/CAB Approval**: gates production changes on
-      `change_requests.cab_approval_required`; sits in front of execute
-- [ ] Retries on operator failure; confirm parallel fan-out still holds under queue mode
-- [ ] Integration health data flowing for Supabase / Outlook / Slack
-
-**Chee Hou**
-- [ ] Insights from real processed data: recurring known-error cluster (VPN/SSO), major incident
-      forming, KB gap where no article exists, SLA-breach forecast, uneven load from `team_roster`
+### Phase 4 — Fri 7 Aug · Insights, Data Manager, first full run
+- [ ] Insights computed from real run history: recurring known-error cluster (VPN/SSO), major
+      incident forming, KB gap where no article exists, SLA-breach forecast, uneven team load
 - [ ] Each insight carries severity + a concrete action path
-- [ ] **Data Manager page — not in the template, build it.** System, category, purpose, health, last check
+- [ ] **Data Manager** bound to live health for Supabase / Outlook / Slack
+- [ ] AI Manager answers from real records and can re-trigger an operator
+- [ ] **First complete end-to-end run of the full demo script** (§Phase 6), start to finish
 
-**Done when:** 7 operators, 3 integrations green, insights that change as more tickets run.
+**Done when:** the whole demo runs without intervention. Anything still broken here is a
+Saturday problem, and Saturday is for hardening, not building.
 
 ---
 
-### Phase 4 — Fri 7 Aug · Traps + hardening
-Tick each only once demonstrated live:
+### Phase 5 — Sat 8 Aug · Offline build at APU · traps and hardening
+Check-in 10:00–10:45. **Code freeze 23:59.**
+
+The nine seeded traps. Tick each only once demonstrated live:
 - [ ] Stalled provisioning ticket
 - [ ] Recurring known-error across users (VPN/SSO)
 - [ ] Mis-routed ticket bouncing between assignment groups
@@ -266,25 +301,20 @@ Tick each only once demonstrated live:
 - [ ] Duplicate tickets, same user
 - [ ] Same issue in EN/ES/ZH/FR
 
-Then:
-- [ ] **Clean-clone test** — fresh clone, `.env` from example, `.\scripts\start.ps1`, demo works
-- [ ] **General-case test** — each of us runs 3 tickets the other never prepared
-- [ ] Publish final stable versions of all 7 workflows
-- [ ] Submission note: outcome metric + integrations; Auto workspace link ready
-
----
-
-### Phase 5 — Sat 8 Aug · Offline build at APU
-Check-in 10:00–10:45. **Code freeze 23:59.**
-
 | Time | Plan |
 |---|---|
-| 11:00–13:00 | Fix whatever Friday exposed |
-| 14:00–16:30 | Bonus only if everything above is green: self-learning from Workbench overrides, forecasting, rollback operator |
+| 11:00–13:00 | Trap coverage — work the list above |
+| 14:00–16:00 | **General-case test:** each of us runs 3 tickets the other never prepared. Fix what breaks |
+| 16:00–16:30 | **Clean-clone test:** fresh clone, `.env` from example, `.\scripts\start.ps1`, demo works |
 | 16:30–17:00 | Office hours — resolve anything ambiguous with organizers |
 | 17:00–17:30 | Timed full run-through |
 | 17:30–19:00 | **Feature freeze.** Bug fixes and rehearsal only |
+| evening | Publish final stable versions of all 7 workflows; submission note (outcome metric, integrations, Auto workspace link) |
 | ~23:00 | Final clean-clone verification, then freeze |
+
+Bonus work (self-learning from Workbench overrides, forecasting, rollback operator) only if
+everything above is green by 14:00. Otherwise skip it — the rubric pays far more for a working
+demo than for an extra feature that breaks it.
 
 ---
 
@@ -323,6 +353,9 @@ systems · works live.
 
 | Risk | Mitigation |
 |---|---|
+| **Operators-first delays integration** — the biggest risk in this sequencing. Wiring starts Thursday; if the pipe is broken, two days are gone | The Tuesday spike. Prove trigger → SSE → persist on day 2, then return to operators. Never let Thursday be the first time the backend talks to Auto |
+| Operator contracts change after wiring starts | Contracts frozen and written down end of Tuesday. Changes after Wednesday cost double |
+| Agent not finished by Wednesday night | Drop Operator 7 (CAB). 6 operators still clears the floor; a half-built agent on Thursday does not |
 | Rewiring breaks a working orchestrator | Publish stable versions **first** (Phase 0). Rewire in a new draft, revert in one click |
 | Queue mode underestimated | It is a redesign of the entry path, not an add-on. Starts Wednesday morning, not Thursday |
 | SLA computed from raw elapsed time | Phase 0, tested first. `sla_calendar` exists to punish this |
