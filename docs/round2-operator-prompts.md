@@ -25,6 +25,10 @@ steps match the "Steps" section before publishing.
 > - `sla_targets` (textarea, required). Default: `VIP: 4h response / 24h resolution; Non-VIP: 8h response / 48h resolution`
 > - `at_risk_window_minutes` (number, required). Default: `120`. A ticket is "At risk" when this many business minutes or fewer remain before breach.
 > - `default_region` (text, required). Default: `Global`. Used when a ticket's region cannot be resolved.
+> - `as_of` (text, optional). ISO-8601 instant to evaluate against; empty means now.
+>   **Required for demos.** The data pack was generated in July 2026, so against today's clock
+>   every ticket breaches and the dashboard reads 100% breach. Anchor runs to
+>   `2026-07-20T04:00:00Z`.
 > - `issue_keys` (textarea, optional). Comma-separated. When empty, evaluate all unresolved tickets.
 >
 > **Steps.**
@@ -203,7 +207,9 @@ whether a fix is technically safe; Operator 7 decides whether it is *permitted*.
 > the opening-hour clamp and the region join are already verified against the real data.
 
 1. Test each standalone with the seeded cases:
-   - Op5 — a `Remote` (24x7) ticket vs a `Penang` ticket spanning `2026-08-31`
+   - Op5 — **use [`round2-op5-test-fixture.md`](round2-op5-test-fixture.md)**: 8 real tickets
+     with known-correct expected output, including the ITSM-2036 / ITSM-2013 control pair
+     (same created date, same VIP status, 4× different elapsed purely from the calendar)
    - Op6 — should discover `ITSM-2180` and `ITSM-2199` unaided
    - Op7 — `CHG-0001` (Pending CAB), `CHG-0005` (Rolled Back), `CHG-0011` (Low, no CAB)
 2. Publish a stable version of each.
