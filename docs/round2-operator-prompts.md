@@ -115,23 +115,48 @@ all eight elapsed values then matched the reference exactly. But the run still r
 **0 discrepancies with an empty "Stated Status" column on every row**. It is not comparing
 wrongly; it is reading nothing and calling empty-vs-empty a match.
 
-The cause is the column name. It is literally **`customfield_10030 (Time to resolution)`** —
-with a space and parentheses. Asking Supabase for bare `customfield_10030` returns nothing
-silently. Operator 1 gets this right by naming it in full; Operator 5's fetch step does not.
-Verified in Supabase: all eight tickets hold a non-null value (`Within SLA` or `At risk`, no
-padding). Instruct explicitly:
+**The cause is PostgREST select syntax, not a typo.** The column is literally
+`customfield_10030 (Time to resolution)` — with a space and parentheses. PostgREST reads
+`name (…)` as *embedded-resource* syntax, i.e. a join, so it looks for a foreign-key
+relationship instead of a column. Tested against the live project:
 
-> *"In the fetch step, select the stated SLA column by its EXACT literal name including the
-> parenthetical suffix: `customfield_10030 (Time to resolution)`. Do not abbreviate it to
-> `customfield_10030` — that column does not exist and returns null silently. Carry the value
-> through as `stated_sla_status`.*
+| `select=` | result |
+|---|---|
+| `customfield_10030` | `400` — `column issues.customfield_10030 does not exist` |
+| `customfield_10030 (Time to resolution)` | `400 PGRST200` — *"Searched for a foreign key relationship between 'issues' and 'customfield_10030'"* |
+| `*` | ✅ returns the column |
+| `"customfield_10030 (Time to resolution)"` (double-quoted) | ✅ returns the column |
+| `stated_sla:"customfield_10030 (Time to resolution)"` (aliased) | ✅ **best** — clean key name |
+
+Use the alias form. It sidesteps the quoting trap *and* avoids spaces and parentheses in the
+JSON keys downstream. Verified response:
+
+```json
+[ { "Issue key": "ITSM-2000", "stated_sla": "Within SLA", "grp": "Network Ops" } ]
+```
+
+Instruct explicitly:
+
+> *"When selecting columns whose names contain spaces or parentheses, alias them with a
+> double-quoted source name. PostgREST parses an unquoted `name (…)` as an embedded resource
+> and fails with PGRST200. Use exactly:*
 >
-> *After computing `computed_sla_state`, compare the two strings case-insensitively after
-> trimming, and set `discrepancy = true` whenever they differ. If `stated_sla_status` is null
-> or empty for a ticket, set `stated_sla_missing = true` rather than reporting a match — an
-> empty stated value is never a match. Expect a high discrepancy rate: the stated field is a
-> static label written at intake and never recalculated. Do NOT suppress discrepancies or
-> reconcile them by preferring the stated value."*
+> ```
+> select=Issue key,stated_sla:"customfield_10030 (Time to resolution)",grp:"customfield_10101 (Assignment group)"
+> ```
+>
+> *and read the values as `stated_sla` and `grp`. `select=*` is an acceptable fallback. Never
+> request bare `customfield_10030` — that column does not exist.*
+>
+> *After computing `computed_sla_state`, compare it with `stated_sla` case-insensitively after
+> trimming, and set `discrepancy = true` whenever they differ. If `stated_sla` is null or empty,
+> set `stated_sla_missing = true` rather than reporting a match — an empty stated value is
+> never a match. Expect a high discrepancy rate: the stated field is a static label written at
+> intake and never recalculated. Do NOT suppress discrepancies or reconcile them by preferring
+> the stated value."*
+
+The same trap applies to `customfield_10101 (Assignment group)`, which Operators 1 and 2
+already read — check their select statements too.
 
 **Expected after all three fixes**, on the fixture inputs:
 **6 Breached · 2 Within SLA · 0 At risk · 6 discrepancies.** Only ITSM-2000 and ITSM-2004
