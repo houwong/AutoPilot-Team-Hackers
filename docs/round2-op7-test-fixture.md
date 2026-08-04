@@ -5,6 +5,26 @@ on 3 Aug 2026. If Operator 7 disagrees with this table, the operator is wrong.
 
 Operator 7 **decides only**. It never writes to `change_requests` or `issues`.
 
+> ## ✅ PASSED — 4 Aug 2026, build 3
+> All seven decision branches verified: Rejected→block (ITSM-2065), Rolled Back→block with
+> rollback count 1 (ITSM-2214), policy conflict→escalate (ITSM-2004), Pending CAB→escalate
+> (ITSM-2180), Implemented+approver→allow (ITSM-2303), no record→block (ITSM-2000).
+> Steady-state runtime ~2s per ticket.
+>
+> **Two defects found by this fixture, both of which produced correct-looking output:**
+>
+> 1. `cab_approval_required` was being **inferred from the status string** rather than read
+>    from the column — "Pending *CAB* Approval" was taken to imply CAB required. ITSM-2004
+>    (`cab_approval_required = false`) was the only row that could expose it, since the three
+>    rows tested before it are all genuinely `true`.
+> 2. The **policy-conflict branch never fired**. ITSM-2004 reached `escalate` via the generic
+>    pending rule, so the decision was right but the Workbench would have received a routine
+>    CAB wait instead of a flagged policy conflict — losing one of the five exception types
+>    the brief names.
+>
+> Neither would have been caught by checking the decision column alone. Both required
+> comparing the *supporting fields* against known values.
+
 ---
 
 ## Build it as a deterministic cell from the start
