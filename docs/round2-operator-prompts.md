@@ -280,7 +280,8 @@ judge may ask for a different case.
 > **Inputs (all editable at runtime):**
 > - `require_cab_for_risk` (textarea, required). Default: `High, Medium`. Risk levels that require CAB approval before execution.
 > - `auto_approve_risk_levels` (textarea, required). Default: `Low`. Risk levels allowed to proceed without CAB.
-> - `blocking_statuses` (textarea, required). Default: `Pending CAB Approval, Rejected, Rolled Back`
+> - `blocking_statuses` (textarea, required). Default: `Rejected, Rolled Back`
+> - `escalating_statuses` (textarea, required). Default: `Pending CAB Approval`
 > - `require_change_record_for_production` (checkbox, required). Default: `true`. When true, a production-affecting fix with no change record is blocked.
 > - `issue_key` (text, required)
 >
@@ -290,14 +291,24 @@ judge may ask for a different case.
 >    `risk`, `status`, `cab_approval_required`, `approver`.
 > 3. **No record found.** If `require_change_record_for_production` is true, decide `block` with
 >    `requires_new_change_request = true`. Otherwise `allow`.
-> 4. **Record found — evaluate in this order:**
->    - `status` in `blocking_statuses` → `block`. For `Rejected`, mark `terminal = true`.
->    - `status = "Rolled Back"` → `block` and set `prior_rollback = true`; a previously rolled-back
->      change is a strong signal the same fix should not be retried automatically.
->    - `cab_approval_required = true` and `status` is not `Implemented` → `escalate` for CAB approval.
->    - `risk` in `require_cab_for_risk` and no approver recorded → `escalate`.
->    - `risk` in `auto_approve_risk_levels` and `cab_approval_required = false` → `allow`.
->    - `status = "Implemented"` with an approver → `allow`.
+> 4. **Record found — evaluate in this exact order, stopping at the first match:**
+>    - `status = "Rejected"` → `block`, `terminal = true`. Never retry.
+>    - `status = "Rolled Back"` → `block`, `prior_rollback = true`. A fix that already failed and
+>      was reversed must not be retried automatically.
+>    - `status` in `escalating_statuses` **and** `cab_approval_required = false` **and** `risk` in
+>      `auto_approve_risk_levels` → `escalate`, `policy_conflict = true`. Two rules disagree; a
+>      human resolves it.
+>    - `status` in `escalating_statuses` → `escalate`, awaiting CAB approval.
+>    - `status = "Implemented"`, `cab_approval_required = true`, no approver → `escalate`.
+>    - `status = "Implemented"` → `allow`.
+>    - anything else → `escalate` with the unrecognised status in the reason.
+>
+>    **Status always beats risk.** A `Low`-risk change in a pending state is still pending.
+>    **`Pending CAB Approval` is an escalation, never a block** — blocking it removes the
+>    human-in-the-loop path this operator exists to create.
+>
+>    Match every status and risk string **stripped and casefolded**. Operator 6 lost two clusters
+>    to a leading space in a comma-separated input.
 > 5. **Check rollback history** across all `change_requests` rows for the same `issue_key` and
 >    report how many previously reached `Rolled Back`.
 >
