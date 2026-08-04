@@ -51,7 +51,10 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      target: prod
+      # .env sets FRONTEND_TARGET=dev but this was hardcoded to prod, so the
+      # variable had no effect and the container shipped a pre-built bundle with
+      # no source. Frontend changes were invisible until the image was rebuilt.
+      target: ${FRONTEND_TARGET:-prod}
       args:
         - NEXTAUTH_URL=${NEXTAUTH_URL}
         - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
@@ -60,7 +63,15 @@ services:
     ports:
       - "127.0.0.1:3001:3000"
     environment:
-      - NODE_ENV=production
+      # The dev stage runs `next dev`, which needs NODE_ENV=development to
+      # enable hot reload; prod keeps the built server.
+      - NODE_ENV=${FRONTEND_NODE_ENV:-production}
+    volumes:
+      # Mounted so edits are picked up without a rebuild. Harmless under the
+      # prod target, which serves .next and ignores these.
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/next.config.ts:/app/next.config.ts
     env_file:
       - .env
     depends_on:
