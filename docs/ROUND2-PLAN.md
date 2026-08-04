@@ -16,7 +16,50 @@
 
 ## 1. Where we are
 
-### Done ✅
+### Completed work — checked off by day
+
+**Mon 3 Aug — foundations**
+- [x] Round 2 data pack loaded into Supabase: 10 tables, 885 rows, additive upsert
+- [x] `row_id` continuity preserved and Round 1 rows back-filled with the new columns
+- [x] Line endings pinned (`.gitattributes`) — the backend had been crash-looping for 2 hours
+- [x] Stack verified: postgres, backend, frontend all healthy
+- [x] Round 1 agent audited live: found Op4 never invoked, orchestrator single-ticket
+- [x] Command Center models + Alembic migration `d4e5f6g7h8i9` for all 7 tables
+- [x] `app/services/sla.py` business-hours engine + **35 passing tests**
+- [x] Fixed `tests/` never being mounted, and `test_main.py` broken on httpx 0.28
+
+**Tue 4 Aug — the agent**
+- [x] **Operator 5** SLA & Business-Hours Engine — passed fixture on build 5
+- [x] **Operator 6** Major-Incident Detector — passed fixture on build 3 (deterministic cell)
+- [x] **Operator 7** Change / CAB Approval Gate — passed all 7 branches on build 3
+- [x] Fixtures written for Op5, Op6, Op7 with known-correct expected values
+- [x] **Prompt A** — rewired 4 inline steps; Op4 went from 0 references to 3
+- [x] **Prompt B** — queue mode attempted and abandoned; reverted to v7
+- [x] **Prompt C** — Op5 ∥ Op6 added as parallel fan-out, fan-in at triage
+- [x] **Prompt D** — Op7 added as a three-way gate *before* remediation
+- [x] Fixed the dead escalate branch (`depends_on` is an AND)
+- [x] `target_issue_key` added for on-demand runs
+- [x] Orchestrator now coordinates **7 operators**, v13
+
+**Tue 4 Aug — the backend**
+- [x] `auto_client.py` — multipart + SSE, verified against the live platform
+- [x] Thin-wire spike proven end to end (`scripts/auto_smoke.py`)
+- [x] `POST /api/agent/runs` + persistence of runs and operator steps
+- [x] 21 policies seeded, driving every run, typed and overridable
+- [x] Workbench: parking, exception creation, resolve → `change_requests` write → follow-up run
+- [x] Fixed condition events overwriting operator output (9 rows → 6)
+- [x] Fixed Op7 returning `change_id: null`, which was looping approvals
+- [x] [architecture.md](architecture.md) written — doubles as the submission's diagram
+
+**Gate conditions — all four met**
+- [x] Solves the business problem end to end
+- [x] Genuine human in the loop, and the decision completes the workflow
+- [x] Connected to real systems (Supabase, Outlook, Slack)
+- [x] Works live
+
+---
+
+### What that means in place
 
 **The agent — 7 operators on Auto, orchestrated**
 
