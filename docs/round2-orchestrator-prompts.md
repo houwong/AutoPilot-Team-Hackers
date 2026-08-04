@@ -1,5 +1,28 @@
 # Orchestrator build prompts — IT Ticker Orchestrator
 
+> ## ✅ COMPLETE — 4 Aug 2026, orchestrator v11
+> **7 distinct operators wired**, 21 inputs, no inline integration code.
+>
+> ```
+> start_at: step_0_sla ∥ step_0_incidents   parallel fan-out (Op5, Op6)
+>           both → step_1_sweep             fan-in
+> step_1_sweep → step_2_diag → step_4_gate  (Op1, Op2, Op7)
+> step_4_gate  → allow    → step_3_rem      (Op3)
+>              → escalate → step_4_rev      (human form)
+>              → block    → step_6_notif_rejected  (Op4)
+> step_3_rem   → cond_auto   → step_6_notif_auto   (Op4)
+>              → cond_review → step_4_rev
+> step_4_rev   → approved → step_5_exec (Op3) → step_6_notif_manual (Op4)
+>              → rejected → step_6_notif_rejected  (Op4)
+> ```
+>
+> Prompts A, C and D applied. **Prompt B abandoned** — see below.
+>
+> **Gate placement correction:** Operator 7 sits *before* `step_3_rem`, not after. Operator 3
+> executes the fix itself when it judges a change safe (`execute_and_verify_update` writes to
+> Supabase), so a gate placed downstream would approve a change already applied. Op7 needs only
+> `issue_key`, so it runs before any remediation is attempted.
+
 Four prompts, in order. **Run one, verify, then run the next.** Do not batch them — the
 orchestrator is the riskiest thing in the build and each prompt changes its shape.
 
