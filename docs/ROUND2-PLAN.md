@@ -1,428 +1,248 @@
 # Round 2 Build Plan — Track 3: Service Desk Command Center
 
 **Team Hackers** · Chee Hou (`houwong`) · Ve Song
-**Track:** 3 — Customer Support / Stalled-Ticket Resolver
-**Outcome metric we commit to moving:** SLA compliance % (primary), MTTR (secondary)
+**Outcome metric:** SLA compliance % (primary), MTTR (secondary)
 
-| Phase | Date | Theme |
-|---|---|---|
-| 0 | Mon 3 Aug (today) | Baseline lock + Round 2 data |
-| 1 | Tue 4 Aug | **Agent:** rewire + Operator 5 · *plus one thin wire spike* |
-| 2 | Wed 5 Aug | **Agent:** queue mode + Operators 6 & 7 → agent complete |
-| 3 | Thu 6 Aug | **Wire:** backend, policies, Workbench |
-| 4 | Fri 7 Aug | **Wire:** Insights, Data Manager, first full end-to-end |
-| 5 | Sat 8 Aug | Traps, clean clone, rehearsal · **code freeze 23:59** |
-| 6 | Sun 9 Aug | Grand Finale · 10–12 min live showcase |
-
-### Sequencing principle
-**Finish the operators on Auto before wiring the Command Center to them.** The backend binds to
-operator inputs and outputs; wiring against a contract that is still changing means doing the
-work twice.
-
-**The one exception — a thin wire on Tuesday.** Integration is where the surprises live
-(multipart encoding, SSE parsing, auth headers). Waiting until Thursday to discover a problem
-there costs the week. So on Tuesday we prove exactly one path end to end — backend triggers the
-existing orchestrator, consumes the SSE stream, writes one `agent_run` row — and then stop and
-go back to operators. No features, just proof the pipe works.
-
-Chee Hou is not idle during Phases 1–2. Everything on the Command Center side that does **not**
-depend on operator contracts gets built first: DB schema, SLA engine, policy storage and editor
-UI (the five policy inputs are already known from the Round 1 operators), Workbench UI shell,
-Data Manager page. Only the *binding* waits.
+> ## Status — end of Tue 4 Aug
+> **The agent and the backend are done. The frontend is not started.**
+>
+> All four gate conditions are met and demonstrable through the API. What a judge will
+> actually *look at* — the dashboard, Workbench, Policies and Insights pages — does not exist
+> yet. That is roughly **35 rubric points** plus the "live dashboard" gate.
+>
+> Three days of remote build left: Wed, Thu, Fri. Then Sat at APU with a 23:59 freeze.
 
 ---
 
-## 1. Round 1 baseline — audited 3 Aug from the live Auto API
+## 1. Where we are
 
-Five workflows exist under org `Team Hackers`. **Nothing here gets deleted or rebuilt. Every
-item below is a rewire or an addition.**
+### Done ✅
 
-| Workflow | ID | Ver |
+**The agent — 7 operators on Auto, orchestrated**
+
+| | | |
 |---|---|---|
-| IT Ticker Orchestrator | `019f7943-03f8-7000-8313-d9ae873d1197` | 4 |
-| Operator 1: Backlog Sweep & Triage | `019f7441-4a4b-7000-b133-e05f2baea0c7` | 2 |
-| Operator 2: Diagnosis | `019f7486-e47c-7000-afa3-129bce27f4cd` | 5 |
-| Operator 3: Safe Remediation | `019f7401-8d0e-7000-ba92-2325d75fe3fd` | 2 |
-| Operator 4: Requester Notification | `019f7432-3c5b-7000-b62a-9ba69d7bcd1e` | 3 |
+| Op1 Backlog Sweep & Triage | `019f7441` | Round 1 |
+| Op2 Diagnosis | `019f7486` | Round 1 |
+| Op3 Safe Remediation | `019f7401` | Round 1 |
+| Op4 Requester Notification | `019f7432` | Round 1 — **now actually invoked** |
+| Op5 SLA & Business-Hours Engine | `019fc6bd` | new, fixture-verified |
+| Op6 Major-Incident Detector | `019fc7cb` | new, fixture-verified |
+| Op7 Change / CAB Approval Gate | `019fcac2` | new, fixture-verified |
 
-### What is already strong — protect this
-- **Real decomposition.** Steps 1–3 use `subworkflow_call` against the operator IDs. Not a
-  mega-agent; clears the gate.
-- **Real branching.** Orchestrator forks auto-resolved / needs-review, then approved / rejected.
-- **Real parallelism.** Op2 fans out to 4 concurrent Supabase fetches and fans back in to one
-  LLM diagnose step. This is exactly what "orchestration depth" scores.
-- **Human loop exists** via `human_input_form`.
-- **Integration floor already met**: Supabase (system of record), Outlook (channel), Slack
-  (channel + human loop), LLM.
-- **Op3 verifies its own writes** — re-queries the row and compares expected vs observed.
-- **Data-fidelity guards** — `DATA_INTEGRITY_ERROR` on issue_key/row_id mismatch, explicit
-  anti-fabrication instructions.
+Orchestrator v13: parallel fan-out (Op5 ∥ Op6), fan-in at triage, three-way CAB gate before
+remediation, two-way branches at remediation and review, `target_issue_key` for on-demand runs.
+No inline code touching Supabase, Outlook or Slack — every external call goes through an
+operator. See [architecture.md](architecture.md).
 
-### Gap 1 — four steps bypass the operators they name
-| Orchestrator step | Mode today | Target state |
-|---|---|---|
-| `step_1_sweep` | ✅ subworkflow → Op1 | keep |
-| `step_2_diag` | ✅ subworkflow → Op2 | keep |
-| `step_3_rem` | ✅ subworkflow → Op3 | keep |
-| `step_4_rev` | human form | becomes Command Center Workbench (see §2) |
-| `step_5_exec` | ❌ inline, 6,729 chars | → `subworkflow_call` Op3 |
-| `step_6_notif_auto` | ❌ inline | → `subworkflow_call` Op4 |
-| `step_6_notif_manual` | ❌ inline, 10,350 chars | → `subworkflow_call` Op4 |
-| `step_6_notif_rejected` | ❌ inline, 9,625 chars | → `subworkflow_call` Op4 |
+**The data** — 885 rows across 10 Supabase tables, `row_id` continuity preserved, Round 1 rows
+back-filled. See §5.
 
-Operator 4 is fully built and **never invoked** — the orchestrator re-implements notification
-inline. So we have **3 wired operators, not 4**. Rewiring is config, not code, and it is the
-cheapest scoring gain in the build. Op4 itself is not modified.
+**The backend**
+- `app/services/auto_client.py` — multipart + SSE, verified against the live platform
+- `POST /api/agent/runs` → drives a run, persists `agent_runs` + `operator_executions`
+- 21 policies seeded and passed as workflow inputs on every run
+- Workbench: parks on human pause, builds the exception with gate + incident context,
+  approval writes to `change_requests` and triggers the follow-up run
+- `app/services/sla.py` + 35 passing tests
+- Models and migration for all 7 Command Center tables
 
-### Gap 2 — the orchestrator runs one ticket per execution
-Its own description: *"fetches exactly one highest-priority active ticket"*, and Op1's output
-mapping takes `prioritized_tickets[0]` and discards the rest.
+### Not started ❌
 
-**A one-ticket orchestrator cannot detect the INC-9001 flood**, which is the headline trap in
-our dataset. Queue mode is a redesign of the orchestrator's entry path, not an add-on. Budget
-real time for it (Phase 2).
+- **Frontend** — dashboard still shows the template's seeded numbers; no Policies, Workbench,
+  Insights or Data Manager pages
+- **AI Insights** — engine and page
+- **Data Manager** — backend and page
+- **Trap coverage**, clean-clone test, full demo run-through
 
-### Gap 3 — the operators still read only the Round 1 four tables
-The Round 2 data is now **loaded** (see §3.1), but no operator reads the six new tables yet.
-In use: `issues`, `users_directory`, `knowledge_base`, `assets_access`.
-Not yet read: `ticket_comments`, `csat_surveys`, `change_requests`, `incident_problem_links`,
-`sla_calendar`, `team_roster`. Each maps to a seeded trap, and each is claimed by one of
-Operators 5–7.
+### Outstanding chores
 
-Related: Op1 is instructed *"Use customfield_10030 exactly… Do not recalculate SLA hours."*
-Correct for Round 1; `sla_calendar` was added in Round 2 precisely to require business-hours
-computation. See Operator 5.
-
-### Gap 4 — no run history
-`GET /workflow-runs` returns 0 rows. The dashboard has nothing to show until we start running
-and persisting. Our own DB is the only history we will have.
-
-### The asset we already have: policies as workflow inputs
-The operators already accept `priority_ranking_order`, `sla_thresholds`,
-`kb_confidence_threshold`, `stalled_days_threshold`, `routing_mapping_json` as inputs. **These
-are our Round 2 policies.** The Command Center stores current values, a business user edits
-them in the browser, the backend passes them on the next `execute` call — behaviour changes
-with no code and no redeploy. That is the exact demo a judge asks for, and it means we are much
-closer on the 20-point Policies criterion than the operator count suggests.
+- [ ] **Publish stable versions of all 8 Auto workflows.** Everything is still `isDraft: true`.
+      Op6 broke once after passing and there was nothing to revert to.
+- [ ] **Add Ve Song as a collaborator** on `AutoPilot-Team-Hackers`
+- [ ] Clear the `target_issue_key` default (currently `ITSM-2180`, so every run targets it)
+- [ ] Op5/Op6 still declare a `SUPABASE_TOKEN` env alongside the native integration; Op7 and Op1
+      use the integration alone. Tidy for Data Manager consistency.
 
 ---
 
-## 2. Two architecture decisions to make today
+## 2. The remaining schedule
 
-### 2.1 The human loop must move into our Workbench
-Today the pause happens in Auto's `human_input_form`. The rubric requires the **Command Center
-Workbench** to be where a real exception is cleared.
+### Wed 5 Aug — make it visible
 
-**Recommended: split the orchestrator into two runs.**
-```
-Run A  sweep → diagnose → remediation ANALYSIS → return outcome
-         ↓ backend evaluates policy, creates exception_item
-         ↓ human approves/modifies/rejects in OUR Workbench
-Run B  execute (Op3) → notify (Op4)      ← triggered by backend on approval
-```
-Orchestration stays on Auto, the human queue lives in our Command Center, and no long-running
-Auto wait or inbound tunnel is required. Keep `step_4_rev` in place as a fallback path.
+The whole day is frontend. Nothing else moves the score as much.
 
-### 2.2 Can Auto reach our backend?
-If an Operator calls `POST /api/policies/evaluate` mid-flow, Auto's cloud must reach us —
-`localhost:8001` will not work.
+- [ ] **Workbench page** — the queue, item detail with gate reasoning + incident blast radius,
+      Approve / Modify / Reject. API is done and tested; this is the gate condition a judge
+      needs to *see*.
+- [ ] **Dashboard wired to live data** — backlog by SLA risk, MTTR, auto-resolution rate, open
+      incidents, exception queue. Sources: `/api/agent/runs`, `/api/exceptions/stats/summary`.
+      **Delete every seeded fixture on the way past.**
+- [ ] **Policies page** — edit the 21 rows, grouped by operator (SLA / Incident / Change) rather
+      than 21 flat fields. Must show that a change takes effect on the next run.
 
-- **Option A:** `cloudflared` tunnel; operators call the policy endpoint directly. Strongest
-  narrative — the gate sits inside the agent's execution.
-- **Option B:** backend-mediated (the two-run split above). Policy is evaluated between runs,
-  still strictly *before* the action executes. No tunnel.
+**Done when:** a judge can trigger a run, watch the dashboard move, see the exception arrive,
+and clear it — without touching the API directly.
 
-**Go with B as the primary** — it composes with §2.1 and removes a demo-day dependency. Build
-A only if time allows, as a bonus talking point.
+### Thu 6 Aug — Insights and Data Manager
+
+- [ ] **Insights engine** over `agent_runs`, `operator_executions`, `policy_evaluations`,
+      `exception_items` — recurring known-error clusters, major incident forming, KB gaps,
+      SLA-breach forecast, uneven team load. Each with severity and a concrete action path.
+- [ ] **Data Manager** — `/api/integrations` + page. Supabase, Outlook, Slack with live health.
+      Not in the template; must be built.
+- [ ] **AI Manager** — answers from real records, can re-trigger an operator. Lowest priority
+      of the three; 4 points.
+
+### Fri 7 Aug — traps and hardening
+
+- [ ] The nine seeded traps, each demonstrated live (§6)
+- [ ] **Clean-clone test on Windows** — the `.gitattributes` fix means it should work, but prove it
+- [ ] **General-case test** — each of us runs 3 tickets the other never prepared
+- [ ] Publish final stable versions of all 8 workflows
+- [ ] Submission note: outcome metric, integrations, Auto workspace link
+
+### Sat 8 Aug — APU, freeze 23:59
+
+| Time | |
+|---|---|
+| 11:00–14:00 | Fix whatever Friday exposed |
+| 14:00–16:00 | Bonus only if everything is green: self-learning from Workbench overrides, forecasting |
+| 16:00–16:30 | Clean-clone verification |
+| 16:30–17:00 | Office hours |
+| 17:00–17:30 | Timed run-through |
+| **17:30** | **Feature freeze.** Bug fixes and rehearsal only |
+| ~23:00 | Final verification, then freeze |
+
+### Sun 9 Aug — Grand Finale
+
+Arrive 10:00–10:45, 15 min set-up, judging from 11:00. Slot is 10–12 min.
 
 ---
 
-## 3. Verified API contract
-
-Base host is **`auto-workflow-api.supervity.ai`** — *not* `auto.supervity.ai` from the docs.
+## 3. The demo — rehearse this exact run
 
 ```
-POST https://auto-workflow-api.supervity.ai/api/v1/workflow-runs/execute
-POST https://auto-workflow-api.supervity.ai/api/v1/workflow-runs/execute/stream   ← SSE
+1. (30s)  Dashboard — Arjun's morning. Backlog by SLA risk, open incidents, exception queue.
+2. (60s)  POST a run for ITSM-2180 from the Command Center.
+          Op5 ∥ Op6 fan out in parallel — watch the operator trace appear live.
+3. (90s)  Op6 has found INC-9001: 23 tickets, 21 reporters, 4 assignment groups, one root
+          cause. Including the same outage reported in Spanish, Chinese and French.
+4. (90s)  Op7 gates it: ESCALATE, CHG-0001, Pending CAB Approval. Op3 never runs —
+          nothing touched production.
+5. (2m)   The Workbench item: gate reasoning, change record, incident blast radius, and the
+          policy values in force. Approve it.
+          CHG-0001 → Implemented. A follow-up run starts. The gate now allows.
+6. (90s)  THE POLICY EDIT. Change require_change_record_for_production to true, re-run the
+          same ticket, watch it block instead. Both evaluations in the log, each showing the
+          threshold as it was at decision time.
+7. (60s)  Insights: 11 recurring known errors — 44 "Shared drive access" tickets over 23 days
+          is a KB gap, not an incident. Plus the SLA discrepancy finding.
+8. (30s)  Data Manager — Supabase, Outlook, Slack, all green.
+```
 
-Authorization:   Bearer <AUTO_API_KEY from .env>
-x-source:        external            ← REQUIRED. Omit it and every call is 401
-x-active-org:    Team Hackers
+Presentation polish scores zero. Expect an unrehearsed ticket — `target_issue_key` handles it.
+
+---
+
+## 4. Rubric position
+
+| Criterion | Pts | Status |
+|---|---:|---|
+| Business output | 30 | Agent solves it end to end. **Quantified metric still needed** — comes from Insights |
+| Architecture on Auto | 20 | 7 operators ✅ · fan-out/branching ✅ · **Data Manager missing (5)** |
+| Customizability & Policies | 20 | Gate-before-act ✅ · logging ✅ · **UI missing (7)** |
+| AI Insights | 15 | **Not started** |
+| Command Center & live demo | 15 | **Frontend not started** |
+| Bonus | +10 | Self-learning from Workbench overrides is the obvious one |
+
+**Gate conditions: all four met** — solves the problem end to end, genuine human in the loop,
+real systems, works live.
+
+---
+
+## 5. Reference
+
+### Auto API — verified, not from the docs
+
+Host is **`auto-workflow-api.supervity.ai`**, not the documented `auto.supervity.ai`.
+
+```
+POST /api/v1/workflow-runs/execute/stream      multipart/form-data, fields inputs[<name>]
+Authorization: Bearer <AUTO_API_KEY>
+x-source: external          ← REQUIRED; omitting it returns a bare 401
+x-active-org: Team Hackers
 x-user-timezone: Asia/Kuala_Lumpur
 ```
 
-**Body is `multipart/form-data`, not JSON:**
-```
-workflowId                      = 019f7441-4a4b-7000-b133-e05f2baea0c7
-inputs[priority_ranking_order]  = <text>
-inputs[sla_thresholds]          = <text>
-```
+No webhooks. A Workflow API key cannot read run history. **The SSE stream is the only chance to
+capture a run** — a run triggered in Auto's UI is invisible to the Command Center.
 
-Read endpoints that work on this host (verified): `GET /workflows`,
-`GET /workflows/:id` (full step graph), `GET /workflows/:id/versions`, `GET /workflow-runs`.
+Events nest under `content`. `activity-run` carries `stepId`, `status`, `attempt`; step *names*
+arrive only on the terminal `result`. Branching steps emit one `activity-run` per condition
+reusing the parent's `stepId` — filter on `conditionMet`. A delegating step's output is only a
+link to the sub-workflow run; the operator's result must be fetched from there.
 
-SSE events: `activity-run`, `workflow-run`, `thinking`, `result`, `error`.
-Rate limit: **60 req/min per IP** — batch the incident flood, don't fire per ticket.
+Rate limit 60 req/min per IP.
 
-### 3.1 The data layer — loaded 3 Aug ✅
+### Data layer
 
-Supabase project **`stalled-ticket-resolver`** (`pkwvlnvxmawvgqzqvkcg`, ap-southeast-1).
-All 10 tables, 885 rows. RLS is disabled on every table, which is what lets the Auto native
-Supabase integration read and write without extra policy work.
+Supabase `stalled-ticket-resolver` (`pkwvlnvxmawvgqzqvkcg`), RLS disabled, 885 rows.
 
-| Table | Rows | | Table | Rows |
-|---|---:|---|---|---:|
-| `issues` | 460 | | `ticket_comments` | 277 |
-| `users_directory` | 97 | | `csat_surveys` | 87 |
-| `assets_access` | 173 | | `change_requests` | 13 |
-| `knowledge_base` | 38 | | `incident_problem_links` | 31 |
-| | | | `sla_calendar` | 5 |
-| | | | `team_roster` | 12 |
+`issues` 460 · `ticket_comments` 277 · `assets_access` 173 · `users_directory` 97 ·
+`csat_surveys` 87 · `knowledge_base` 38 · `incident_problem_links` 31 · `change_requests` 13 ·
+`team_roster` 12 · `sla_calendar` 5
 
 Four facts the operators depend on:
+- `row_id` continuity preserved: 1 → `ITSM-2000`, 180 → `ITSM-2179`, 181 → `ITSM-2180`
+- Round 1 rows were back-filled with the new columns, not appended past
+- 460 tickets, not 462 — two byte-identical duplicate rows were deduped
+- **`issues."Created"` is `text` in three formats**: ISO, `DD/MM/YYYY` day-first, `Jul 20 2026`
+- Region comes from the **reporter** (`Reporter → display_name → location → region`), never
+  from the assignment group — that mapping is one-to-many
 
-- **`row_id` continuity is preserved.** 1 → `ITSM-2000`, 180 → `ITSM-2179`, 181 → `ITSM-2180`.
-  Round 1 tickets kept their original `row_id`s, so Op3's update-by-`row_id` still works.
-- **Round 1 rows were back-filled, not appended past.** 162 of the original 180 now carry
-  `x_channel`. A plain append would have left them null and made Op1 triage old and new tickets
-  differently.
-- **460 tickets, not 462.** The CSV contains two byte-identical duplicate rows (`ITSM-2186`,
-  `ITSM-2219`) which were deduped, so every ticket has exactly one `row_id`.
-- **⚠️ `issues."Created"` is stored as `text`**, while `Updated` and `Due date` are `timestamptz`.
-  Operator 5 computes elapsed business minutes from `Created` and **must cast explicitly**.
+PostgREST parses `name (…)` as a join. Alias awkward columns:
+`select=stated_sla:"customfield_10030 (Time to resolution)"`
 
-Two independent incident-linkage mechanisms exist, and Operator 6 should use both:
-- `issues.linked_incident` → `INC-9001` (24 tickets), `INC-9002` (7)
-- `incident_problem_links.parent_incident_key` → `ITSM-2180` (22 children), `ITSM-2199` (6)
+### The nine seeded traps
 
-They describe the same clusters by different names, so each can cross-validate the other —
-exactly the kind of non-trivial correlation the Insights criterion rewards.
-
-### Our backend's own contract
-```
-POST /api/agent/runs              → opens SSE, persists agent_run
-POST /api/policies/evaluate       → { decision: allow|deny|escalate, policy_id, reason, evaluation_id }
-GET  /api/exceptions              → Workbench queue
-POST /api/exceptions/{id}/resolve → records decision, triggers Run B
-GET  /api/integrations            → Data Manager health
-```
-
-### Tables (write together, Day 0, then frozen)
-`agent_run` · `operator_execution` · `policy` · `policy_evaluation` · `exception_item` ·
-`insight` · `integration`. The template's `audit_logs` already exists — use
-`app.services.audit` for the decision trail rather than inventing a second one.
-
----
-
-## 4. Work split
-
-**Ve Song — Auto & integrations.** Owns all workflow edits, Supabase loading, Outlook/Slack.
-Repo files: `app/services/auto_client.py`, `app/routers/agent.py`, `app/routers/integrations.py`, `scripts/seed_round2.py`.
-
-**Chee Hou — Command Center.** Policies, Insights, Workbench, Dashboard, Data Manager, all frontend.
-Repo files: `app/routers/policies.py`, `app/routers/insights.py`, `app/routers/exceptions.py`, `app/services/sla.py`, `frontend/**`.
-
-Branches `agent/*` and `cc/*`, merged to `main` daily. `main` must always start clean via
-`.\scripts\start.ps1`. `.env` never committed.
-
----
-
-## 5. Phases
-
-### Phase 0 — Mon 3 Aug (today)
-
-**Done ✅**
-- [x] **Round 2 data loaded into Supabase** — all 10 tables, 885 rows, `row_id` continuity
-      preserved, Round 1 rows back-filled with the new columns (§3.1)
-- [x] **Line endings pinned** (`.gitattributes`). The backend had been crash-looping for two
-      hours on `start_gunicorn.sh: 20: : not found` — `core.autocrlf=true` rewrote the entrypoint
-      to CRLF and the container's `sh` choked on it. Round 2 requires a clean clone to work, and
-      any judge cloning on Windows would have hit the same failure.
-- [x] **Stack verified running** — postgres, backend and frontend all healthy;
-      `/api/health` returns `{"status":"ok"}`, dashboard and API docs both 200
-
-**Still open**
-- [ ] **Ve Song — publish a stable version of all 5 workflows.** Everything is `isDraft: true`.
-      This is the rollback point before tomorrow's rewiring. Do it before touching anything.
-- [ ] **Ve Song — add Ve Song as a repo collaborator** on `AutoPilot-Team-Hackers`
-- [ ] **Chee Hou — `app/models/` + one Alembic migration** for the 7 Command Center tables (§3)
-- [ ] **Chee Hou — workflow IDs into `.env`** (§1)
-- [ ] **Chee Hou — `app/services/sla.py`**: business-hours SLA from `sla_calendar`, with unit
-      tests covering a holiday and an after-hours case. Remember `Created` is `text` — cast it.
-
-**Done when:** stable versions exist and the SLA function passes tests.
-
----
-
-### Phase 1 — Tue 4 Aug · Agent work + thin wire spike
-**Ve Song — operators only**
-- [ ] Rewire `step_5_exec` → `subworkflow_call` Op3
-- [ ] Rewire `step_6_notif_auto` / `_manual` / `_rejected` → `subworkflow_call` Op4
-- [ ] **Operator 5 — SLA & Business-Hours Engine** (new): computes true SLA state from
-      `sla_calendar` + timezone + holidays; replaces Op1's read of `customfield_10030`
-- [ ] Confirm all 4 existing operators still pass end to end after rewiring
-- [ ] **Freeze and write down each operator's input/output contract** — this is what Chee Hou
-      binds to on Thursday. A contract change after Wednesday costs double.
-
-**Chee Hou — the spike, then contract-independent work**
-- [ ] **SPIKE (do first, timebox to the morning):** `auto_client.py` — multipart POST +
-      SSE consumption; `POST /api/agent/runs` writes one `agent_run` row from a real
-      orchestrator run. Prove the pipe, then stop.
-- [ ] `app/services/sla.py` finished and tested against `sla_calendar`
-- [ ] Policy storage + editor UI for the five known inputs (`priority_ranking_order`,
-      `sla_thresholds`, `kb_confidence_threshold`, `stalled_days_threshold`, `routing_mapping_json`)
-- [ ] Workbench UI shell and Data Manager page — layout and states, no live binding yet
-
-**Done when:** 5 operators genuinely invoked on Auto, and exactly one run has been triggered
-from our backend and persisted. No dashboard wiring yet — that is Thursday.
-
----
-
-### Phase 2 — Wed 5 Aug · Agent complete
-**Ve Song — operators only**
-- [ ] **Orchestrator queue mode** — process a batch, not `prioritized_tickets[0]`
-- [ ] **Operator 6 — Major-Incident Detector**: clusters via `incident_problem_links`, opens
-      parent INC-9001, drives comms until closed
-- [ ] **Operator 7 — Change/CAB Approval**: gates production changes on
-      `change_requests.cab_approval_required`; sits in front of execute
-- [ ] Retries on operator failure; confirm Op2's parallel fan-out still holds under queue mode
-- [ ] Implement the two-run split (§2.1): Run A ends at analysis, Run B executes on approval
-- [ ] **Run the agent repeatedly against real tickets** — Thursday's insights need history
-
-**Chee Hou**
-- [ ] Policy engine internals: evaluation, priority ordering, `policy_evaluation` logging
-- [ ] Workbench interactions: approve / modify / reject, decision recorded
-- [ ] Insight computation functions, unit-tested against fixture data
-
-**Done when: the agent is finished.** 7 operators, queue mode, branching, retries — and it can
-be demonstrated end to end **on Auto alone, with no Command Center involved.** This is the
-milestone the whole week hinges on. If it slips, drop Operator 7 rather than letting it slide.
-
----
-
-### Phase 3 — Thu 6 Aug · Wire the Command Center
-Operator contracts are frozen. Now bind everything.
-
-**Together — this is a joint day, not a split one**
-- [ ] Backend triggers the orchestrator with **policy values from the database** as workflow inputs
-- [ ] SSE stream → one `operator_execution` row per `activity-run`; `error` → `exception_item`
-- [ ] Dashboard live: backlog by SLA risk, MTTR, auto-resolution rate, open incidents, CSAT
-      — **no seeded numbers left anywhere**
-- [ ] Exceptions route to our Workbench with full context and the agent's recommendation
-- [ ] Resolution in the Workbench triggers Run B
-
-**Done when:** you lower `kb_confidence_threshold` from 0.85 to 0.50 in the browser, re-run the
-same ticket, it auto-resolves instead of escalating, and both evaluations appear in the log.
-**Rehearse this exact sequence — it is the most likely judge request in the room.**
-
----
-
-### Phase 4 — Fri 7 Aug · Insights, Data Manager, first full run
-- [ ] Insights computed from real run history: recurring known-error cluster (VPN/SSO), major
-      incident forming, KB gap where no article exists, SLA-breach forecast, uneven team load
-- [ ] Each insight carries severity + a concrete action path
-- [ ] **Data Manager** bound to live health for Supabase / Outlook / Slack
-- [ ] AI Manager answers from real records and can re-trigger an operator
-- [ ] **First complete end-to-end run of the full demo script** (§Phase 6), start to finish
-
-**Done when:** the whole demo runs without intervention. Anything still broken here is a
-Saturday problem, and Saturday is for hardening, not building.
-
----
-
-### Phase 5 — Sat 8 Aug · Offline build at APU · traps and hardening
-Check-in 10:00–10:45. **Code freeze 23:59.**
-
-The nine seeded traps. Tick each only once demonstrated live:
-- [ ] Stalled provisioning ticket
-- [ ] Recurring known-error across users (VPN/SSO)
-- [ ] Mis-routed ticket bouncing between assignment groups
-- [ ] VIP after-hours near SLA breach *(needs Operator 5)*
-- [ ] Major incident flood, one root cause INC-9001 *(needs queue mode + Operator 6)*
-- [ ] Change/CAB approval required before fix *(needs Operator 7)*
-- [ ] Failed remediation rolled back
-- [ ] Duplicate tickets, same user
-- [ ] Same issue in EN/ES/ZH/FR
-
-| Time | Plan |
+| trap | covered by |
 |---|---|
-| 11:00–13:00 | Trap coverage — work the list above |
-| 14:00–16:00 | **General-case test:** each of us runs 3 tickets the other never prepared. Fix what breaks |
-| 16:00–16:30 | **Clean-clone test:** fresh clone, `.env` from example, `.\scripts\start.ps1`, demo works |
-| 16:30–17:00 | Office hours — resolve anything ambiguous with organizers |
-| 17:00–17:30 | Timed full run-through |
-| 17:30–19:00 | **Feature freeze.** Bug fixes and rehearsal only |
-| evening | Publish final stable versions of all 7 workflows; submission note (outcome metric, integrations, Auto workspace link) |
-| ~23:00 | Final clean-clone verification, then freeze |
-
-Bonus work (self-learning from Workbench overrides, forecasting, rollback operator) only if
-everything above is green by 14:00. Otherwise skip it — the rubric pays far more for a working
-demo than for an extra feature that breaks it.
+| Stalled provisioning | Op2 |
+| Recurring known error (VPN/SSO) | Op6 — 11 patterns |
+| Mis-routed ticket | Op2 routing map |
+| VIP after-hours near breach | Op5 — business hours |
+| Major incident flood, INC-9001 | Op6 — 23 tickets |
+| CAB approval required | Op7 — CHG-0001 |
+| Failed remediation rolled back | Op7 — `prior_rollback` |
+| Duplicate tickets | Op6 — 3 pairs |
+| Same issue in EN/ES/ZH/FR | Op6 — inside the INC-9001 cluster |
 
 ---
 
-### Phase 6 — Sun 9 Aug · Grand Finale
-Arrive 10:00–10:45. 15 min set-up. Slot is 10–12 min: 8–10 demo, 2–3 Q&A.
-
-1. *(30s)* Dashboard — Arjun's morning, backlog by SLA risk, live
-2. *(90s)* Inbound ticket → Orchestrator fans out to 7 operators → resolved, with the trace
-3. *(2m)* Major incident: flood of tickets, one root cause, INC-9001 opened and correlated
-4. *(2m)* **The policy edit** — change a threshold on screen, re-run, different behaviour, both evaluations logged
-5. *(2m)* VIP after-hours near breach → our Workbench with full context → resolved live → Run B continues
-6. *(1m)* Insights: recurring known-error cluster + its action path
-7. *(30s)* Data Manager — three systems green
-
-Presentation polish scores **zero**. Expect an unrehearsed case and questions on your own architecture.
-
----
-
-## 6. Rubric map
-
-| Criterion | Pts | Earned in |
-|---|---|---|
-| Business output | 30 | Phases 1–4; the quantified SLA number comes from Phase 3 insights |
-| Architecture on Auto | 20 | Phases 1–3 — 7 operators (8), fan-out/branching/retry (7), Data Manager (5) |
-| Customizability & Policies | 20 | Phase 2 — gate-before-act (8), no-code edit (7), audit (5) |
-| AI Insights | 15 | Phase 3 — real data (6), non-trivial + severity (5), action path (4) |
-| Command Center & live demo | 15 | Phases 1 + 6 |
-| **Bonus** | +10 | Phase 5 |
-
-**Gate runs first:** solves the real problem end to end · genuine human in the loop · real
-systems · works live.
-
----
-
-## 7. Risks
+## 6. Risks
 
 | Risk | Mitigation |
 |---|---|
-| **Operators-first delays integration** — the biggest risk in this sequencing. Wiring starts Thursday; if the pipe is broken, two days are gone | The Tuesday spike. Prove trigger → SSE → persist on day 2, then return to operators. Never let Thursday be the first time the backend talks to Auto |
-| Operator contracts change after wiring starts | Contracts frozen and written down end of Tuesday. Changes after Wednesday cost double |
-| Agent not finished by Wednesday night | Drop Operator 7 (CAB). 6 operators still clears the floor; a half-built agent on Thursday does not |
-| Rewiring breaks a working orchestrator | Publish stable versions **first** (Phase 0). Rewire in a new draft, revert in one click |
-| Queue mode underestimated | It is a redesign of the entry path, not an add-on. Starts Wednesday morning, not Thursday |
-| SLA computed from raw elapsed time | Phase 0, tested first. `sla_calendar` exists to punish this |
-| Human loop stays only in Auto's form | Rubric wants it in our Workbench. Two-run split, Phase 2 |
-| Policy displays but doesn't gate | Every acting operator consults the policy decision. Review Ve Song's operators Wednesday |
-| Template demo data ships | Friday sweep: grep frontend for seeded policy/insight fixtures, delete |
-| 60 req/min hit during flood | Batch the flood into one run. Test at full 30-ticket volume Friday |
-| Workflows left as drafts | Publish stable versions Phase 0 and again Phase 4 |
-| Auto's `auto.supervity.ai` docs host ≠ real API host | Use `auto-workflow-api.supervity.ai` everywhere (§3) |
+| **Frontend not started with 3 days left** | Wednesday is frontend only. Workbench first, then dashboard, then Policies |
+| Insights not started; 15 points and a rubric line | Thursday. The data already exists in `agent_runs` and `policy_evaluations` — it is queries, not new plumbing |
+| All 8 workflows still drafts | Publish tonight. This has been open since Monday |
+| A run triggered in Auto's UI shows nothing | **Always trigger from the Command Center.** No webhooks |
+| Orchestrator run takes ~100s to reach the gate | Op5 and Op6 scan the full backlog. Budget it in a 10-min slot |
+| Demo data mutated by testing | Approving writes to `change_requests`. Restore `CHG-0001` to `Pending CAB Approval` after any approval test |
+| A judge asks for an unprepared ticket | `target_issue_key` — but clear its default first |
+| Silent defects | Every operator defect so far produced confident, plausible, wrong output. Fixtures are the only reason they were caught. **Never validate on summary counts** |
 
 ---
 
-## 8. Daily rhythm
-- **09:00 standup (15 min):** shipped / blocked / does §3 still hold
-- **21:00 integration check:** merge to `main`, clean-clone smoke test, one end-to-end run
-- **Discord is the source of truth.** A live ruling overrides this plan and the guide.
+## 7. Sources
 
----
+- [architecture.md](architecture.md) — how the agent works
+- [round2-op5-test-fixture.md](round2-op5-test-fixture.md) · [op6](round2-op6-test-fixture.md) ·
+  [op7](round2-op7-test-fixture.md) — known-correct expected values
+- [round2-operator-prompts.md](round2-operator-prompts.md) — operator build prompts + failure log
+- [round2-orchestrator-prompts.md](round2-orchestrator-prompts.md) — orchestrator prompts A–D
+- Auto docs `auto.supervity.ai/docs` · keys `auto.supervity.ai/u/api-keys`
 
-## 9. Sources
-- `Autopilot_Asia_Round2_Participant_Guide.pdf` (20 pp) · `ProblemStatement__Service_Desk.pdf` (3 pp)
-- Dataset: 10 tables, 1,195 rows; `Field_Dictionary.csv` lists the 9 seeded traps
-- Round 1 workflows audited live from `auto-workflow-api.supervity.ai` on 3 Aug 2026
-- Template: `github.com/digitamizers/AutoPilot-Template` · Auto docs: `auto.supervity.ai/docs`
-
-> ⚠️ [hackathon-brief.md](hackathon-brief.md) in this repo is generic template filler — wrong
-> tracks, wrong rubric, no Data Manager, no integration floor. This plan supersedes it.
+> ⚠️ [hackathon-brief.md](hackathon-brief.md) is generic template filler — wrong tracks, wrong
+> rubric, no Data Manager. This plan supersedes it.
