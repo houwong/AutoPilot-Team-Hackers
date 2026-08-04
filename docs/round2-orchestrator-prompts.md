@@ -88,11 +88,38 @@ Run one ticket end to end and confirm the requester still receives mail and Slac
 
 ---
 
-## Prompt B — queue mode
+## Prompt B — queue mode ❌ ABANDONED, 4 Aug
+
+**Do not run this.** It was tried (orchestrator v8) and broke the run.
+
+Batching moved iteration inside the step mapping code, but Auto evaluates branch conditions
+**once per step, not per ticket**. The existing conditions read a single result:
+
+```
+cond_auto:   "Check `rem_result`. Return True if outcome matches 'safe', 'verified', …"
+cond_review: "Check `rem_result`. Return True if outcome matches 'HUMAN_REVIEW_REQUIRED', …"
+```
+
+With a batch, `rem_result` became a list of 5. Neither string test matches a list, so **both
+conditions evaluated false**, no next step was selected, and the run ended after three
+activities — reporting `completed` because nothing errored, it simply ran out of edges.
+
+The step-run record was unambiguous: 3 activity runs (Op1, Op2, Op3), no notification, no human
+form, no summary step, and **zero Op4 invocations despite a summary claiming 3 auto-resolutions**.
+That summary was LLM narration from `step_7_summary`'s prompt — *"ensure the sum of counts equals
+the number of tickets"* is an instruction a model satisfies by making numbers add up.
+
+**Decision: the orchestrator stays single-ticket.** Operator 6 already reads all 460 tickets on
+its own and passed its fixture that way, so the flood demo does not need orchestrator batching.
+Keeping single-ticket preserves the conditional branch structure, which is explicitly scored.
+
+Reverted to v7 (`019fcb6b-e6a7-7000-811b-d82b43bb0b25`).
+
+<details>
+<summary>Original prompt B text, kept for reference only</summary>
 
 The orchestrator currently processes exactly one ticket: Op1's output mapping takes
-`prioritized_tickets[0]` and discards the rest. **Operator 6 cannot detect a flood in a queue of
-one.** This is the prerequisite for everything Op6 does.
+`prioritized_tickets[0]` and discards the rest.</details>
 
 ```
 Convert this orchestrator from single-ticket to queue processing.
@@ -169,13 +196,19 @@ ADD THESE ORCHESTRATOR INPUTS so they can be passed down:
 USE THE RESULTS
 step_1_sweep: pass `sla_states` into Operator 1 so triage ranks on the computed
 business-hours SLA rather than the stale customfield_10030 label. Where a ticket
-appears in `sla_states`, its computed_sla_state takes precedence.
+appears in `sla_states`, its computed_sla_state takes precedence. Operator 1
+still returns exactly one ticket — prioritized_tickets[0] — as it does today.
+Do NOT change it to return a batch.
 
-step_2_diag onward: for each ticket in `batch`, attach its cluster from
-`incident_clusters` if it is a member. A ticket belonging to a cluster whose
-recommended_action is declare_major_incident must be handled as part of that
-incident, not as an isolated ticket — set major_incident_key on it and include
-the parent and sibling count in the context passed downstream.
+step_2_diag onward: after step_1_sweep has selected the single ticket, look it up
+in `incident_clusters`. If it is a member of a cluster whose recommended_action
+is declare_major_incident, set `major_incident_key` on `ticket_data` and attach
+the parent key, sibling count, affected assignment groups and VIP count to the
+context passed downstream. A ticket that is part of a major incident must be
+handled as part of that incident, not as an isolated ticket.
+
+Keep the existing single-ticket flow and all existing branch conditions exactly
+as they are. Do not batch, do not iterate, do not change any next_steps edge.
 
 Do not modify Operator 5 or Operator 6. They are verified against fixtures and
 must be called unchanged.
@@ -196,10 +229,11 @@ Workbench path is born.
 Add the change-approval gate between remediation analysis and execution.
 
 NEW STEP: step_4_gate — trigger the "Operator 7 — Change / CAB Approval Gate"
-agent, for each ticket in `batch` whose remediation analysis proposes an action.
+agent for the single ticket in `ticket_data`, when remediation analysis proposes
+an action.
 
 It runs AFTER step_3_rem and BEFORE any execution or human review.
-Inputs: issue_key from the ticket, plus the orchestrator inputs
+Inputs: issue_key from `ticket_data`, plus the orchestrator inputs
 blocking_statuses, escalating_statuses, require_cab_for_risk,
 auto_approve_risk_levels and require_change_record_for_production.
 Save its output to `gate_result`.
