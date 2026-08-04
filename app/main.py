@@ -37,6 +37,7 @@ from .core.storage import GCSStorage, LocalStorage, StorageBackend
 from .middleware import AuditMiddleware
 from .routers import (
     admin_router,
+    agent_router,
     audit_router,
     auth_router,
     examples_router,
@@ -150,6 +151,9 @@ api_router.include_router(audit_router)
 
 # Item CRUD operations
 api_router.include_router(items_router)
+
+# Agent runs — trigger the Auto orchestrator and read run history
+api_router.include_router(agent_router)
 
 # Authorization pattern examples
 api_router.include_router(examples_router)
