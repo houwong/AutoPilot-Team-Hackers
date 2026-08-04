@@ -24,6 +24,18 @@ Operator 7 **decides only**. It never writes to `change_requests` or `issues`.
 >
 > Neither would have been caught by checking the decision column alone. Both required
 > comparing the *supporting fields* against known values.
+>
+> **A third defect surfaced later, from the Workbench.** The operator returned
+> `change_id: null` on every response while reporting that same row's `risk`, `status` and
+> `approver`. Nothing in the decision column looked wrong, but the Workbench had no id to write
+> an approval back to, so the follow-up run hit the same gate and escalated again — an approval
+> loop. Fixed in Op7 v5: `ITSM-2180 → CHG-0001`, `ITSM-2214 → CHG-0005`, `ITSM-2000 → null`.
+>
+> **Note on `ITSM-2000`.** This fixture lists it as `block` because it assumes
+> `require_change_record_for_production = true`. The seeded Command Center policy default is
+> **false**, under which the same ticket correctly returns `allow` — *"No change record found;
+> policy permits execution without one."* Same ticket, opposite outcome, one policy row: this is
+> the cleanest live demonstration of no-code configurability in the build.
 
 ---
 
