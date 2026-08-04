@@ -10,6 +10,7 @@ from .agent import router as agent_router
 from .audit import router as audit_router
 from .auth import router as auth_router
 from .examples import router as examples_router
+from .exceptions import router as exceptions_router
 from .health import router as health_router
 from .items import router as items_router
 
@@ -21,4 +22,5 @@ __all__ = [
     "items_router",
     "examples_router",
     "agent_router",
+    "exceptions_router",
 ]

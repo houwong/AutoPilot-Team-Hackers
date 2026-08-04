@@ -122,6 +122,26 @@ class AutoEvent:
         return v if isinstance(v, dict) else None
 
     @property
+    def kind(self) -> Optional[str]:
+        """`step` for real work; branching steps also emit condition evaluations."""
+        return self.payload.get("kind")
+
+    @property
+    def is_condition(self) -> bool:
+        """
+        True when this event is a branch condition rather than the step itself.
+
+        Auto emits one activity-run per condition on a branching step, reusing
+        the parent's stepId — step_4_gate produced four for one execution. Their
+        outputs look like {"output": "False\\n", "conditionMet": false} and will
+        silently overwrite the real step output if not filtered out.
+        """
+        outputs = self.outputs or {}
+        if "conditionMet" in outputs:
+            return True
+        return self.kind is not None and self.kind != "step"
+
+    @property
     def step_names(self) -> dict[str, str]:
         """
         stepId -> stepName, available only on the terminal `result` event.
@@ -213,6 +233,39 @@ class AutoClient:
             return r.json()
         except json.JSONDecodeError:
             return {"raw": r.text}
+
+    async def get_run(self, run_id: str) -> dict:
+        """
+        Read one workflow run, including its activity runs and their outputs.
+
+        Needed because an orchestrator step that delegates to a sub-workflow does
+        NOT carry the operator's result in its own output — it carries only a
+        link to the sub-workflow run. The decision JSON has to be fetched from
+        there.
+        """
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            r = await client.get(
+                f"{self.base_url}/api/v1/workflow-runs/{run_id}", headers=_headers()
+            )
+        if r.status_code >= 400:
+            raise AutoError(f"get_run failed {r.status_code}: {r.text[:400]}")
+        return r.json()
+
+    async def get_step_result(self, sub_run_id: str) -> dict:
+        """Parse the operator's structured output out of a sub-workflow run."""
+        run = await self.get_run(sub_run_id)
+        for activity in run.get("activityRuns") or []:
+            outputs = activity.get("outputs")
+            if isinstance(outputs, dict):
+                inner = outputs.get("output")
+                if isinstance(inner, str) and inner.strip():
+                    try:
+                        return json.loads(inner)
+                    except json.JSONDecodeError:
+                        continue
+                if isinstance(inner, dict):
+                    return inner
+        return {}
 
     async def stream(
         self, workflow_id: str, inputs: dict[str, Any] | None = None

@@ -1,0 +1,263 @@
+# app/routers/exceptions.py
+"""
+The Workbench — the human queue.
+
+Every item arrives with full context and the agent's recommendation. A person
+approves, modifies or rejects, the decision is recorded, and the workflow
+continues from there.
+
+HOW THE LOOP ACTUALLY CLOSES
+Auto cannot be resumed mid-run from outside, and we must not re-implement the
+orchestration in the backend — that would move delegation off Auto. So an
+approval works by changing the fact the agent reasons about:
+
+    approve  ->  write the decision into `change_requests`  (system of record)
+             ->  trigger a fresh orchestrator run for the same ticket
+             ->  Operator 7 now reads status 'Implemented' and returns `allow`
+             ->  remediation proceeds and Operator 4 notifies
+
+That is what a CAB approval *is* — a change to the change record. The human's
+action alters the world, not just our audit trail, and the agent responds to it
+on its own terms. Orchestration stays entirely on Auto.
+
+A rejection records the decision and stops. Nothing is remediated.
+"""
+
+import asyncio
+import logging
+import uuid
+from datetime import datetime, timezone
+from typing import Any, Optional
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from ..core.database import get_db
+from ..models.command_center import (
+    AgentRun,
+    ExceptionItem,
+    ExceptionStatus,
+    Resolution,
+    RunPhase,
+    RunStatus,
+)
+from ..services import supabase
+from .agent import ORCHESTRATOR_ID, _consume, resolve_inputs
+
+log = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/exceptions", tags=["Workbench"])
+
+
+# =============================================================================
+# SCHEMAS
+# =============================================================================
+
+
+class ResolveRequest(BaseModel):
+    resolution: str = Field(..., description="approved | modified | rejected")
+    notes: Optional[str] = Field(None, description="Why — recorded for the audit trail")
+    resolved_by: str = Field("Dev User", description="Who decided")
+    rerun: bool = Field(True, description="Trigger the follow-up run on approval")
+
+
+class ExceptionOut(BaseModel):
+    id: int
+    exception_type: Optional[str]
+    severity: Optional[str]
+    primary_issue_key: Optional[str]
+    issue_keys: Optional[list]
+    title: Optional[str]
+    recommendation: Optional[str]
+    confidence: Optional[float]
+    status: Optional[str]
+    resolution: Optional[str]
+    resolution_notes: Optional[str]
+    resolved_by: Optional[str]
+    resolved_at: Optional[datetime]
+    follow_up_run_id: Optional[str]
+    created_at: Optional[datetime]
+
+    class Config:
+        from_attributes = True
+
+
+# =============================================================================
+# QUEUE
+# =============================================================================
+
+
+@router.get("", response_model=list[ExceptionOut])
+def list_exceptions(
+    status: Optional[str] = Query(None, description="open | in_review | resolved"),
+    exception_type: Optional[str] = None,
+    limit: int = Query(50, le=200),
+    db: Session = Depends(get_db),
+):
+    """The queue, most severe and newest first."""
+    q = db.query(ExceptionItem)
+    if status:
+        q = q.filter(ExceptionItem.status == status)
+    if exception_type:
+        q = q.filter(ExceptionItem.exception_type == exception_type)
+    # critical before warning before info, then newest.
+    order = {"critical": 0, "warning": 1, "info": 2}
+    rows = q.order_by(ExceptionItem.id.desc()).limit(limit).all()
+    return sorted(rows, key=lambda r: (order.get(r.severity or "info", 3), -r.id))
+
+
+@router.get("/{exception_id}")
+def get_exception(exception_id: int, db: Session = Depends(get_db)):
+    """
+    One item with everything the reviewer needs: the gate's reasoning, the
+    change record, the incident blast radius, and the policy values that were
+    in force when the decision was made.
+    """
+    item = db.query(ExceptionItem).get(exception_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Exception not found")
+    run = db.query(AgentRun).get(item.agent_run_id) if item.agent_run_id else None
+    return {
+        "exception": ExceptionOut.model_validate(item).model_dump(),
+        "context": item.context,
+        "run": {"run_id": run.run_id, "status": run.status} if run else None,
+    }
+
+
+# =============================================================================
+# RESOLUTION
+# =============================================================================
+
+
+@router.post("/{exception_id}/resolve")
+async def resolve_exception(
+    exception_id: int,
+    body: ResolveRequest,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """
+    Record a human decision and, on approval, let the agent continue.
+
+    Approval writes the CAB decision to `change_requests` so Operator 7 returns
+    a different answer, then triggers a fresh orchestrator run for the same
+    ticket. Nothing about the orchestration moves into this backend.
+    """
+    item = db.query(ExceptionItem).get(exception_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="Exception not found")
+    if item.status == ExceptionStatus.RESOLVED.value:
+        raise HTTPException(status_code=409, detail="Already resolved")
+
+    resolution = body.resolution.strip().lower()
+    if resolution not in {r.value for r in Resolution}:
+        raise HTTPException(
+            status_code=422,
+            detail=f"resolution must be one of {sorted(r.value for r in Resolution)}",
+        )
+
+    approved = resolution in (Resolution.APPROVED.value, Resolution.MODIFIED.value)
+    gate = (item.context or {}).get("gate") or {}
+    change_id = gate.get("change_id")
+    cab_result: dict[str, Any] | None = None
+
+    # Operator 7 currently returns change_id as null even when it has clearly read
+    # the row (it reports that row's risk, status and approver). Without an id the
+    # approval cannot be written back, the gate escalates again on the follow-up
+    # run, and the reviewer is stuck in a loop. Look it up by issue_key instead —
+    # the mapping is 1:1 in this data — so the Workbench does not depend on an
+    # operator field that may be missing.
+    if not change_id and item.primary_issue_key:
+        try:
+            rows = await supabase.select(
+                "change_requests",
+                {"issue_key": f"eq.{item.primary_issue_key}", "select": "change_id,status"},
+            )
+            if rows:
+                change_id = rows[0].get("change_id")
+                log.info(
+                    "resolved change_id %s for %s from Supabase (gate omitted it)",
+                    change_id,
+                    item.primary_issue_key,
+                )
+        except supabase.SupabaseError as exc:
+            log.warning("change lookup failed for %s: %s", item.primary_issue_key, exc)
+
+    # 1. Write the decision to the system of record, when there is a change to decide on.
+    if change_id:
+        try:
+            cab_result = await supabase.record_cab_approval(
+                change_id=change_id, approver=body.resolved_by, approved=approved
+            )
+        except supabase.SupabaseError as exc:
+            log.error("could not record CAB decision for %s: %s", change_id, exc)
+            raise HTTPException(
+                status_code=502, detail=f"Could not update change record: {exc}"
+            ) from exc
+
+    # 2. Record the human decision.
+    item.status = ExceptionStatus.RESOLVED.value
+    item.resolution = resolution
+    item.resolution_notes = body.notes
+    item.resolved_by = body.resolved_by
+    item.resolved_at = datetime.now(timezone.utc)
+    db.commit()
+
+    # 3. On approval, let the agent try again — Operator 7 will now allow it.
+    follow_up: Optional[str] = None
+    if approved and body.rerun and item.primary_issue_key:
+        inputs = resolve_inputs(db, {"target_issue_key": item.primary_issue_key})
+        parent = db.query(AgentRun).get(item.agent_run_id) if item.agent_run_id else None
+        run = AgentRun(
+            run_id=str(uuid.uuid4()),
+            workflow_id=ORCHESTRATOR_ID,
+            trigger="workbench",
+            phase=RunPhase.EXECUTION.value,
+            status=RunStatus.PENDING.value,
+            issue_keys=[item.primary_issue_key],
+            inputs=inputs,
+            parent_run_id=parent.run_id if parent else None,
+            started_at=datetime.now(timezone.utc),
+        )
+        db.add(run)
+        db.commit()
+        db.refresh(run)
+
+        item.follow_up_run_id = run.run_id
+        db.commit()
+        follow_up = run.run_id
+
+        background.add_task(asyncio.run, _consume(run.id, ORCHESTRATOR_ID, inputs))
+
+    return {
+        "exception_id": item.id,
+        "resolution": resolution,
+        "resolved_by": item.resolved_by,
+        "change_record_updated": cab_result,
+        "follow_up_run_id": follow_up,
+        "message": (
+            "Approved. A follow-up run has been triggered; the change gate will now allow it."
+            if follow_up
+            else "Recorded. No follow-up run was triggered."
+        ),
+    }
+
+
+@router.get("/stats/summary")
+def exception_stats(db: Session = Depends(get_db)):
+    """Counts for the dashboard's exception queue tile."""
+    rows = db.query(ExceptionItem).all()
+    return {
+        "total": len(rows),
+        "open": sum(1 for r in rows if r.status == ExceptionStatus.OPEN.value),
+        "resolved": sum(1 for r in rows if r.status == ExceptionStatus.RESOLVED.value),
+        "by_type": {
+            t: sum(1 for r in rows if r.exception_type == t)
+            for t in {r.exception_type for r in rows if r.exception_type}
+        },
+        "by_severity": {
+            s: sum(1 for r in rows if r.severity == s)
+            for s in {r.severity for r in rows if r.severity}
+        },
+    }

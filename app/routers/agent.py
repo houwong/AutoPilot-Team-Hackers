@@ -17,6 +17,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -28,10 +29,13 @@ from sqlalchemy.orm import Session
 from ..core.database import SessionLocal, get_db
 from ..models.command_center import (
     AgentRun,
+    ExceptionItem,
+    ExceptionStatus,
     OperatorExecution,
     Policy,
     RunPhase,
     RunStatus,
+    Severity,
 )
 from ..services.auto_client import (
     EV_ACTIVITY,
@@ -51,6 +55,14 @@ ORCHESTRATOR_ID = os.getenv("AUTO_WF_ORCHESTRATOR", "019f7943-03f8-7000-8313-d9a
 # Statuses Auto reports for a finished step.
 _DONE = {"completed", "succeeded", "success", "ok"}
 _FAILED = {"failed", "error", "cancelled"}
+
+# The orchestrator step that opens Auto's human form. When it starts, the run is
+# waiting on a person: we detach, park the run, and take the decision into our
+# own Workbench instead of leaving it in Auto's console.
+HUMAN_STEP_ID = os.getenv("AUTO_HUMAN_STEP_ID", "step_4_rev")
+GATE_STEP_ID = os.getenv("AUTO_GATE_STEP_ID", "step_4_gate")
+INCIDENT_STEP_ID = os.getenv("AUTO_INCIDENT_STEP_ID", "step_0_incidents")
+REMEDIATION_STEP_ID = os.getenv("AUTO_REMEDIATION_STEP_ID", "step_3_rem")
 
 
 # =============================================================================
@@ -129,14 +141,18 @@ async def _consume(run_pk: int, workflow_id: str, inputs: dict[str, Any]) -> Non
     """
     Drive one Auto run and persist every event.
 
-    Uses its own session because it outlives the request. Each `activity-run`
-    event is upserted by `activityRunId`: the `running` event creates the row,
-    the `completed` event fills in status, output and duration.
+    Uses its own session because it outlives the request.
+
+    Rows are keyed by `stepId`, not `activityRunId`. Auto emits a separate
+    activityRunId for each condition it evaluates on a branching step, so
+    step_4_gate alone produced four ids for one execution. Keying by stepId
+    collapses those, and also folds Auto's retries (attempt > 1) into the same
+    row rather than inventing a new operator.
     """
     client = AutoClient()
     db: Session = SessionLocal()
     seq = 0
-    by_activity: dict[str, OperatorExecution] = {}
+    by_step: dict[str, OperatorExecution] = {}
 
     try:
         run = db.query(AgentRun).get(run_pk)
@@ -150,8 +166,8 @@ async def _consume(run_pk: int, workflow_id: str, inputs: dict[str, Any]) -> Non
                 run.auto_run_id = ev.auto_run_id
                 db.commit()
 
-            if ev.event == EV_ACTIVITY and ev.activity_run_id:
-                row = by_activity.get(ev.activity_run_id)
+            if ev.event == EV_ACTIVITY and ev.step_id:
+                row = by_step.get(ev.step_id)
                 if row is None:
                     seq += 1
                     row = OperatorExecution(
@@ -163,7 +179,7 @@ async def _consume(run_pk: int, workflow_id: str, inputs: dict[str, Any]) -> Non
                         started_at=now,
                     )
                     db.add(row)
-                    by_activity[ev.activity_run_id] = row
+                    by_step[ev.step_id] = row
                 else:
                     row.status = ev.status
                 if ev.status in _DONE or ev.status in _FAILED:
@@ -171,12 +187,34 @@ async def _consume(run_pk: int, workflow_id: str, inputs: dict[str, Any]) -> Non
                     if row.started_at:
                         row.duration_ms = (now - row.started_at).total_seconds() * 1000
                     if ev.outputs:
-                        row.output = ev.outputs
+                        if ev.is_condition:
+                            # A branch evaluation, not the step's own result.
+                            # Record which branch was taken, but never let it
+                            # overwrite the operator's actual output.
+                            conds = list((row.input or {}).get("conditions") or [])
+                            conds.append(
+                                {
+                                    "met": ev.outputs.get("conditionMet"),
+                                    "activity_run_id": ev.activity_run_id,
+                                }
+                            )
+                            row.input = {**(row.input or {}), "conditions": conds}
+                        else:
+                            row.output = ev.outputs
                     if ev.status in _FAILED:
                         row.error = json.dumps(ev.payload)[:4000]
                 if (ev.attempt or 1) > 1:
                     row.input = {**(row.input or {}), "attempt": ev.attempt}
                 db.commit()
+
+                # --- the pause ---------------------------------------------
+                # Auto's human form has opened. Leaving the stream attached
+                # would hold a connection and a DB session for as long as the
+                # reviewer takes, and would leave the decision in Auto's
+                # console rather than our Workbench. Detach and park the run.
+                if ev.step_id == HUMAN_STEP_ID and ev.status not in _DONE:
+                    await _park_for_human(client, db, run, by_step)
+                    return
 
             elif ev.event == EV_WORKFLOW and ev.status:
                 run.status = (
@@ -323,6 +361,119 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
             for s in steps
         ],
     }
+
+
+_SUB_RUN_RE = re.compile(r"/runs/([0-9a-f-]{20,})", re.I)
+
+
+async def _step_result(
+    client: AutoClient, by_step: dict[str, OperatorExecution], step_id: str
+) -> dict:
+    """
+    Get an operator's structured result for one orchestrator step.
+
+    A delegating step's own output contains only a link to the sub-workflow run,
+    so the decision JSON must be fetched from that run. Falls back to any inline
+    output for steps that are not delegations.
+    """
+    row = by_step.get(step_id)
+    out = row.output if row is not None else None
+    if not isinstance(out, dict):
+        return {}
+
+    inner = out.get("output")
+    if isinstance(inner, dict):
+        return inner
+    if isinstance(inner, str) and inner.strip():
+        try:
+            return json.loads(inner)
+        except json.JSONDecodeError:
+            pass
+
+    html = ((out.get("displayData") or {}).get("html")) or ""
+    m = _SUB_RUN_RE.search(html)
+    if not m:
+        return {}
+    try:
+        return await client.get_step_result(m.group(1))
+    except AutoError as exc:
+        log.warning("could not read sub-workflow result for %s: %s", step_id, exc)
+        return {}
+
+
+async def _park_for_human(
+    client: AutoClient, db: Session, run: AgentRun, by_step: dict[str, OperatorExecution]
+) -> None:
+    """
+    Mark the run as awaiting a human and create the Workbench item.
+
+    The item carries everything the reviewer needs to decide without leaving the
+    page: the gate's reasoning, the change record, and — when the ticket belongs
+    to a major incident — the blast radius Operator 6 measured.
+    """
+    gate = await _step_result(client, by_step, GATE_STEP_ID)
+    remediation = await _step_result(client, by_step, REMEDIATION_STEP_ID)
+    incidents = await _step_result(client, by_step, INCIDENT_STEP_ID)
+
+    issue_key = (
+        gate.get("issue_key")
+        or remediation.get("issue_key")
+        or (run.issue_keys or [None])[0]
+    )
+
+    # Which route reached the human decides the exception type and wording.
+    decision = (gate.get("decision") or "").lower()
+    if decision == "escalate":
+        if gate.get("policy_conflict"):
+            etype, title = "policy_conflict", f"Policy conflict on {issue_key}"
+        else:
+            etype, title = "cab_required", f"CAB approval required for {issue_key}"
+        recommendation = gate.get("reason") or "Awaiting CAB review"
+        severity = Severity.WARNING.value
+    else:
+        etype = "low_confidence"
+        title = f"Remediation needs review for {issue_key}"
+        recommendation = remediation.get("reason") or remediation.get("outcome") or ""
+        severity = Severity.WARNING.value
+
+    # Attach the incident context if this ticket is part of a cluster.
+    cluster = None
+    for c in (incidents.get("clusters") or []):
+        members = [c.get("parent_issue_key")] + list(c.get("child_issue_keys") or [])
+        if issue_key and issue_key in members:
+            cluster = c
+            break
+    if cluster:
+        severity = Severity.CRITICAL.value
+        title = f"{title} — part of {cluster.get('linked_incident_label') or cluster.get('parent_issue_key')}"
+
+    item = ExceptionItem(
+        agent_run_id=run.id,
+        exception_type=etype,
+        severity=severity,
+        primary_issue_key=issue_key,
+        issue_keys=(
+            [cluster.get("parent_issue_key")] + list(cluster.get("child_issue_keys") or [])
+            if cluster
+            else ([issue_key] if issue_key else None)
+        ),
+        title=title,
+        context={
+            "gate": gate,
+            "remediation": remediation,
+            "incident": cluster,
+            "policies_at_run": run.inputs,
+        },
+        recommendation=recommendation,
+        confidence=remediation.get("confidence") or gate.get("confidence"),
+        status=ExceptionStatus.OPEN.value,
+    )
+    db.add(item)
+
+    run.status = RunStatus.AWAITING_HUMAN.value
+    run.ended_at = datetime.now(timezone.utc)
+    db.commit()
+    log.info("run %s parked for human review: %s (%s)", run.run_id, title, etype)
 
 
 def _summarise(run: AgentRun, operator_count: int) -> dict:
