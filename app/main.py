@@ -44,6 +44,7 @@ from .routers import (
     dashboard_router,
     exceptions_router,
     health_router,
+    policies_router,
     items_router,
 )
 from .security import get_current_user, verify_access
@@ -162,6 +163,9 @@ api_router.include_router(exceptions_router)
 
 # Dashboard KPIs — live operational picture
 api_router.include_router(dashboard_router)
+
+# AI Policies — the rules a business owns
+api_router.include_router(policies_router)
 
 # Authorization pattern examples
 api_router.include_router(examples_router)

@@ -33,6 +33,7 @@ from ..models.command_center import (
     ExceptionStatus,
     OperatorExecution,
     Policy,
+    PolicyEvaluation,
     RunPhase,
     RunStatus,
     Severity,
@@ -366,6 +367,52 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
 _SUB_RUN_RE = re.compile(r"/runs/([0-9a-f-]{20,})", re.I)
 
 
+# Which policy a gate decision is attributable to, so the log points at the rule
+# a reviewer would actually change.
+_GATE_POLICY_FOR: dict[str, str] = {
+    "requires_new_change_request": "require_change_record_for_production",
+    "prior_rollback": "blocking_statuses",
+    "terminal": "blocking_statuses",
+    "policy_conflict": "auto_approve_risk_levels",
+}
+
+
+def _log_gate_evaluation(db: Session, run: AgentRun, gate: dict) -> None:
+    """
+    Record the change gate's decision against the policy that drove it.
+
+    `policy_value_at_eval` is stored deliberately: when a judge changes a
+    threshold and re-runs, both evaluations must remain readable, each showing
+    the value that was in force when it was made. Without it, editing a rule
+    silently rewrites the history of every decision taken under the old one.
+    """
+    decision = (gate or {}).get("decision")
+    if not decision:
+        return
+
+    # Pick the most specific rule that explains this outcome.
+    key = next(
+        (k for flag, k in _GATE_POLICY_FOR.items() if gate.get(flag)),
+        "escalating_statuses" if decision == "escalate" else "blocking_statuses",
+    )
+    policy = db.query(Policy).filter(Policy.key == key).first()
+
+    db.add(
+        PolicyEvaluation(
+            agent_run_id=run.id,
+            policy_id=policy.id if policy else None,
+            action="cab_gate",
+            issue_key=gate.get("issue_key") or (run.issue_keys or [None])[0],
+            context=gate,
+            decision=decision,
+            reason=gate.get("reason"),
+            policy_value_at_eval=str((run.inputs or {}).get(key, policy.value if policy else "")),
+        )
+    )
+    db.commit()
+    log.info("policy evaluation logged: %s -> %s (%s)", key, decision, gate.get("issue_key"))
+
+
 def _finalise(run: AgentRun) -> None:
     """Stamp `ended_at` and `duration_ms`. Idempotent — safe to call more than once."""
     if run.ended_at is None:
@@ -482,6 +529,7 @@ async def _park_for_human(
         confidence=remediation.get("confidence") or gate.get("confidence"),
         status=ExceptionStatus.OPEN.value,
     )
+    _log_gate_evaluation(db, run, gate)
     db.add(item)
 
     run.status = RunStatus.AWAITING_HUMAN.value
