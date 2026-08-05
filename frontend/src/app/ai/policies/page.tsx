@@ -90,6 +90,9 @@ function PolicyRule({
       })
       onSaved(`${policy.name} updated — effective on the next run`)
     } catch (e) {
+      // Put the field back to what the server still holds, so the page never
+      // shows a value the agent will not actually use.
+      setValue(policy.value ?? '')
       setError(e instanceof Error ? e.message : 'Could not save')
     } finally {
       setBusy(false)
@@ -98,9 +101,12 @@ function PolicyRule({
 
   async function reset() {
     setBusy(true)
+    setError(null)
     try {
       await apiClient.post(`/api/policies/${policy.key}/reset`)
       onSaved(`${policy.name} reset to its default`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not reset')
     } finally {
       setBusy(false)
     }
