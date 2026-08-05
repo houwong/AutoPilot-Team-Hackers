@@ -44,6 +44,7 @@ from .routers import (
     dashboard_router,
     exceptions_router,
     health_router,
+    insights_router,
     policies_router,
     items_router,
 )
@@ -166,6 +167,9 @@ api_router.include_router(dashboard_router)
 
 # AI Policies — the rules a business owns
 api_router.include_router(policies_router)
+
+# AI Insights — patterns computed from what the agent processed
+api_router.include_router(insights_router)
 
 # Authorization pattern examples
 api_router.include_router(examples_router)
