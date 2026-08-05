@@ -41,6 +41,7 @@ from .routers import (
     audit_router,
     auth_router,
     examples_router,
+    dashboard_router,
     exceptions_router,
     health_router,
     items_router,
@@ -158,6 +159,9 @@ api_router.include_router(agent_router)
 
 # Workbench — the human exception queue
 api_router.include_router(exceptions_router)
+
+# Dashboard KPIs — live operational picture
+api_router.include_router(dashboard_router)
 
 # Authorization pattern examples
 api_router.include_router(examples_router)

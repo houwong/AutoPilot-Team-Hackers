@@ -1,101 +1,104 @@
 'use client'
 
-import { useState, useRef, useEffect } from 'react'
+/**
+ * Dashboard — the live operational picture.
+ *
+ * Every figure comes from something that actually happened: runs the Command
+ * Center triggered, operator steps it recorded, exceptions a human cleared, and
+ * the current backlog in the system of record.
+ *
+ * Nothing is seeded. If the agent has not run, the agent panel reads zero —
+ * which is the honest answer and better than a number that never moves.
+ */
+
+import { useCallback, useEffect, useRef, useState } from 'react'
+import Link from 'next/link'
 import { motion, useInView } from 'framer-motion'
-import apiClient from '@/lib/api-client'
+
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { CardWatermark } from '@/components/ui/card-watermark'
 import { Icons } from '@/components/ui/icons'
-import { ActivityChart } from '@/components/ActivityChart'
 import { cn } from '@/lib/utils'
+import { apiClient } from '@/lib/api-client'
+import { type AgentRun, agent, relativeTime } from '@/lib/command-center'
 
-// Animation variants
+// =============================================================================
+// TYPES
+// =============================================================================
+
+interface Kpis {
+  generated_at: string
+  agent: {
+    runs_total: number
+    runs_24h: number
+    succeeded: number
+    awaiting_human: number
+    failed: number
+    operator_invocations: number
+    avg_run_ms: number | null
+    autonomy_rate: number | null
+  }
+  workbench: {
+    open: number
+    resolved: number
+    by_severity: Record<string, number>
+    by_type: Record<string, number>
+    avg_review_ms: number | null
+  }
+  policies: { total: number; active: number }
+  service_desk: {
+    available: boolean
+    error?: string
+    tickets_total?: number
+    tickets_open?: number
+    by_status?: Record<string, number>
+    by_assignment_group?: Record<string, number>
+    sla_stated?: { breached: number; at_risk: number; within_sla: number }
+    open_incidents?: string[]
+  }
+}
+
 const containerVariants = {
   hidden: { opacity: 0 },
-  visible: {
-    opacity: 1,
-    transition: {
-      staggerChildren: 0.1,
-      delayChildren: 0.1,
-    },
-  },
+  visible: { opacity: 1, transition: { staggerChildren: 0.08 } },
 }
-
 const itemVariants = {
   hidden: { opacity: 0, y: 20 },
-  visible: {
-    opacity: 1,
-    y: 0,
-    transition: {
-      duration: 0.5,
-      ease: [0.25, 0.46, 0.45, 0.94],
-    },
-  },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.4 } },
 }
 
-// Animated number component
-function AnimatedNumber({
-  value,
-  suffix = '',
-  duration = 1000,
-}: {
-  value: number
-  suffix?: string
-  duration?: number
-}) {
-  const [displayValue, setDisplayValue] = useState(0)
+// =============================================================================
+// PIECES
+// =============================================================================
+
+function AnimatedNumber({ value, suffix = '' }: { value: number; suffix?: string }) {
+  const [display, setDisplay] = useState(0)
   const ref = useRef<HTMLSpanElement>(null)
-  const isInView = useInView(ref, { once: true, amount: 0.5 })
-  const hasAnimated = useRef(false)
+  const inView = useInView(ref, { once: true, amount: 0.5 })
+  const from = useRef(0)
 
   useEffect(() => {
-    if (!isInView || hasAnimated.current) return
-    hasAnimated.current = true
-
-    const startTime = performance.now()
-
-    const animate = (currentTime: number) => {
-      const elapsed = currentTime - startTime
-      const progress = Math.min(elapsed / duration, 1)
-      const eased = 1 - Math.pow(2, -10 * progress)
-
-      setDisplayValue(Math.round(eased * value))
-
-      if (progress < 1) {
-        requestAnimationFrame(animate)
-      } else {
-        setDisplayValue(value)
-      }
+    if (!inView) return
+    const start = performance.now()
+    const origin = from.current
+    let raf = 0
+    const tick = (t: number) => {
+      const p = Math.min((t - start) / 700, 1)
+      setDisplay(Math.round(origin + (value - origin) * (1 - Math.pow(1 - p, 3))))
+      if (p < 1) raf = requestAnimationFrame(tick)
+      else from.current = value
     }
-
-    requestAnimationFrame(animate)
-  }, [value, duration, isInView])
-
-  const formatValue = (num: number): string => {
-    if (num >= 1000) {
-      return (num / 1000).toFixed(1) + 'K'
-    }
-    return num.toString()
-  }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [value, inView])
 
   return (
     <span ref={ref}>
-      {formatValue(displayValue)}
+      {display.toLocaleString()}
       {suffix}
     </span>
   )
-}
-
-// Stats Card Component with Bento styling
-interface StatCardProps {
-  title: string
-  value: number
-  suffix?: string
-  icon: React.ElementType
-  trend?: { value: string; positive: boolean }
-  colorClass: string
-  delay?: number
 }
 
 function StatCard({
@@ -103,67 +106,44 @@ function StatCard({
   value,
   suffix = '',
   icon: Icon,
-  trend,
+  note,
   colorClass,
-  delay = 0,
-}: StatCardProps) {
+  tone,
+}: {
+  title: string
+  value: number
+  suffix?: string
+  icon: React.ElementType
+  note?: string
+  colorClass: string
+  tone?: 'alert' | 'good'
+}) {
   return (
-    <motion.div
-      variants={itemVariants}
-      initial='hidden'
-      animate='visible'
-      transition={{ delay }}
-      whileHover={{ y: -4 }}
-    >
-      <Card className='group relative h-full cursor-default overflow-hidden'>
-        {/* Branded watermark texture */}
+    <motion.div variants={itemVariants} whileHover={{ y: -4 }}>
+      <Card className='group relative h-full overflow-hidden'>
         <CardWatermark opacity={3} scale={0.9} />
         <CardContent className='relative z-10 p-5'>
           <div className='flex items-start justify-between'>
             <div className='space-y-2'>
-              {/* Micro label */}
-              <p className='text-micro uppercase text-brand-muted transition-colors duration-200 group-hover:text-brand-cornflower'>
-                {title}
-              </p>
-              {/* Display number */}
-              <p className='font-display text-[2.25rem] font-bold leading-none tracking-tight text-brand-navy'>
+              <p className='text-micro uppercase text-brand-muted'>{title}</p>
+              <p
+                className={cn(
+                  'font-display text-[2.25rem] font-bold leading-none tracking-tight',
+                  tone === 'alert' ? 'text-red-600' : 'text-brand-navy'
+                )}
+              >
                 <AnimatedNumber value={value} suffix={suffix} />
               </p>
-              {/* Trend */}
-              {trend && (
-                <motion.p
-                  className={cn(
-                    'flex items-center gap-1 text-xs font-medium',
-                    trend.positive ? 'text-emerald-600' : 'text-red-500'
-                  )}
-                  initial={{ opacity: 0, x: -10 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: delay + 0.3 }}
-                >
-                  {trend.positive ? (
-                    <Icons.trendingUp className='h-3 w-3' strokeWidth={2} />
-                  ) : (
-                    <Icons.trendingUp
-                      className='h-3 w-3 rotate-180'
-                      strokeWidth={2}
-                    />
-                  )}
-                  {trend.value}
-                </motion.p>
-              )}
+              {note && <p className='text-xs text-muted-foreground'>{note}</p>}
             </div>
-            {/* Icon */}
-            <motion.div
+            <div
               className={cn(
-                'rounded-xl p-2.5 text-white',
-                'shadow-lg',
+                'flex h-10 w-10 items-center justify-center rounded-xl text-white',
                 colorClass
               )}
-              whileHover={{ scale: 1.15, rotate: 5 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 17 }}
             >
               <Icon className='h-5 w-5' strokeWidth={1.5} />
-            </motion.div>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -171,130 +151,110 @@ function StatCard({
   )
 }
 
-// Hero Section
-function HeroSection({ userName }: { userName?: string }) {
-  const firstName = userName?.split(' ')[0] || 'there'
-
+/** Horizontal proportion bar — no chart library needed for three buckets. */
+function SlaBar({ breached, atRisk, within }: { breached: number; atRisk: number; within: number }) {
+  const total = Math.max(breached + atRisk + within, 1)
+  const seg = (n: number) => `${(n / total) * 100}%`
   return (
-    <motion.div
-      className='col-span-12 py-2'
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.6, ease: [0.25, 0.46, 0.45, 0.94] }}
-    >
-      <h1 className='text-display-3 font-bold tracking-tight text-brand-navy lg:text-display-2'>
-        Where Intelligence <br className='hidden sm:block' />
-        <span className='text-gradient'>Meets Human.</span>
-      </h1>
-      <p className='mt-4 text-lg font-light text-muted-foreground'>
-        Welcome back, {firstName}. Your AI Command Center is ready.
-      </p>
-    </motion.div>
+    <div>
+      <div className='flex h-3 overflow-hidden rounded-full bg-muted'>
+        <div className='bg-red-500' style={{ width: seg(breached) }} />
+        <div className='bg-amber-400' style={{ width: seg(atRisk) }} />
+        <div className='bg-emerald-500' style={{ width: seg(within) }} />
+      </div>
+      <div className='mt-3 grid grid-cols-3 gap-2 text-center'>
+        {[
+          ['Breached', breached, 'text-red-600'],
+          ['At risk', atRisk, 'text-amber-600'],
+          ['Within SLA', within, 'text-emerald-600'],
+        ].map(([label, n, cls]) => (
+          <div key={label as string}>
+            <p className={cn('text-xl font-semibold tabular-nums', cls as string)}>{n as number}</p>
+            <p className='text-xs text-muted-foreground'>{label as string}</p>
+          </div>
+        ))}
+      </div>
+    </div>
   )
 }
 
-// Diagnostics Card
-function DiagnosticsCard() {
-  const [apiResponse, setApiResponse] = useState<string>('')
-  const [adminResponse, setAdminResponse] = useState<string>('')
-  const [isLoading, setIsLoading] = useState(false)
+function RunRow({ run }: { run: AgentRun }) {
+  const tone =
+    run.status === 'awaiting_human'
+      ? 'bg-amber-500'
+      : run.status === 'failed'
+        ? 'bg-red-500'
+        : run.status === 'running' || run.status === 'pending'
+          ? 'bg-sky-500 animate-pulse'
+          : 'bg-emerald-500'
+  return (
+    <div className='flex items-center gap-3 border-b border-border/50 py-2 last:border-0'>
+      <span className={cn('h-2 w-2 shrink-0 rounded-full', tone)} />
+      <span className='min-w-0 flex-1 truncate text-sm'>
+        {run.issue_keys?.[0] ?? <span className='text-muted-foreground'>whole queue</span>}
+      </span>
+      <span className='shrink-0 text-xs text-muted-foreground'>
+        {run.operator_count} ops
+      </span>
+      <span className='w-16 shrink-0 text-right text-xs tabular-nums text-muted-foreground'>
+        {run.duration_ms ? `${(run.duration_ms / 1000).toFixed(1)}s` : '—'}
+      </span>
+      <span className='w-16 shrink-0 text-right text-xs text-muted-foreground'>
+        {relativeTime(run.started_at)}
+      </span>
+    </div>
+  )
+}
 
-  const callApi = async (
-    endpoint: string,
-    setter: React.Dispatch<React.SetStateAction<string>>
-  ) => {
-    setIsLoading(true)
-    setter('Loading...')
+// =============================================================================
+// PAGE
+// =============================================================================
+
+export default function DashboardPage() {
+  const [kpis, setKpis] = useState<Kpis | null>(null)
+  const [runs, setRuns] = useState<AgentRun[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [triggering, setTriggering] = useState(false)
+
+  const refresh = useCallback(async () => {
     try {
-      const data = await apiClient(endpoint)
-      setter(JSON.stringify(data, null, 2))
-    } catch (error) {
-      setter(
-        `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
-      )
+      const [k, r] = await Promise.all([
+        apiClient.get<Kpis>('/api/dashboard/kpis'),
+        agent.runs(8),
+      ])
+      setKpis(k)
+      setRuns(r)
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not reach the Command Center API')
+    }
+  }, [])
+
+  useEffect(() => {
+    refresh()
+    // Numbers must move while the agent works, so poll rather than requiring
+    // a manual refresh during a demo.
+    const t = setInterval(refresh, 10000)
+    return () => clearInterval(t)
+  }, [refresh])
+
+  async function trigger() {
+    setTriggering(true)
+    try {
+      await agent.trigger({ trigger: 'manual' })
+      await refresh()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Could not start a run')
     } finally {
-      setIsLoading(false)
+      setTriggering(false)
     }
   }
 
-  return (
-    <Card className='relative col-span-12 h-full overflow-hidden'>
-      <CardWatermark opacity={3} scale={1.1} />
-      <CardHeader className='relative z-10'>
-        <CardTitle className='flex items-center gap-2'>
-          <Icons.activity
-            className='h-5 w-5 text-brand-cornflower'
-            strokeWidth={1.5}
-          />
-          System Diagnostics
-        </CardTitle>
-      </CardHeader>
-      <CardContent className='relative z-10 space-y-6'>
-        <div className='space-y-3'>
-          <div className='flex items-center justify-between'>
-            <div>
-              <p className='text-sm font-medium text-foreground'>
-                Standard Authorization
-              </p>
-              <p className='mt-0.5 font-mono text-xs text-muted-foreground'>
-                /api/test
-              </p>
-            </div>
-          </div>
-          <Button
-            onClick={() => callApi('/api/test', setApiResponse)}
-            disabled={isLoading}
-            variant='outline'
-            className='w-full'
-          >
-            {isLoading ? 'Running...' : 'Run Diagnostics'}
-          </Button>
-          {apiResponse && (
-            <div className='rounded-xl border border-border/50 bg-muted/30 p-4'>
-              <pre className='overflow-x-auto font-mono text-xs text-muted-foreground'>
-                <code>{apiResponse}</code>
-              </pre>
-            </div>
-          )}
-        </div>
+  const a = kpis?.agent
+  const w = kpis?.workbench
+  const sd = kpis?.service_desk
+  const sla = sd?.sla_stated
 
-        <div className='h-px bg-border/50' />
-
-        <div className='space-y-3'>
-          <div className='flex items-center justify-between'>
-            <div>
-              <p className='text-sm font-medium text-foreground'>
-                Admin Verification
-              </p>
-              <p className='mt-0.5 font-mono text-xs text-muted-foreground'>
-                /api/admin/dashboard
-              </p>
-            </div>
-          </div>
-          <Button
-            onClick={() => callApi('/api/admin/dashboard', setAdminResponse)}
-            disabled={isLoading}
-            variant='gradient'
-            className='w-full'
-          >
-            {isLoading ? 'Verifying...' : 'Verify Admin Access'}
-            <Icons.arrowRight className='ml-2 h-4 w-4' />
-          </Button>
-          {adminResponse && (
-            <div className='rounded-xl border border-border/50 bg-muted/30 p-4'>
-              <pre className='overflow-x-auto font-mono text-xs text-muted-foreground'>
-                <code>{adminResponse}</code>
-              </pre>
-            </div>
-          )}
-        </div>
-      </CardContent>
-    </Card>
-  )
-}
-
-// Main Dashboard — no auth required, renders directly
-export default function HomePage() {
   return (
     <motion.div
       className='space-y-6'
@@ -302,59 +262,209 @@ export default function HomePage() {
       initial='hidden'
       animate='visible'
     >
-      {/* Hero Section */}
-      <HeroSection userName='Developer' />
+      <motion.div variants={itemVariants} className='flex flex-wrap items-end justify-between gap-4'>
+        <div>
+          <h1 className='text-display-3 font-bold tracking-tight text-brand-navy'>
+            Service Desk <span className='text-gradient'>Command Center</span>
+          </h1>
+          <p className='mt-2 text-muted-foreground'>
+            {sd?.available
+              ? `${sd.tickets_open} open of ${sd.tickets_total} tickets`
+              : 'Backlog unavailable'}
+            {sd?.open_incidents?.length ? (
+              <span className='ml-2 font-medium text-red-600'>
+                · {sd.open_incidents.length} major incident
+                {sd.open_incidents.length > 1 ? 's' : ''} open
+              </span>
+            ) : null}
+          </p>
+        </div>
+        <div className='flex gap-2'>
+          <Button onClick={trigger} disabled={triggering}>
+            {triggering ? (
+              <Icons.loader className='mr-2 h-4 w-4 animate-spin' />
+            ) : (
+              <Icons.zap className='mr-2 h-4 w-4' />
+            )}
+            Run the agent
+          </Button>
+          <Link href='/workbench'>
+            <Button variant='outline'>
+              <Icons.inbox className='mr-2 h-4 w-4' />
+              Workbench
+              {w?.open ? (
+                <span className='ml-2 rounded-full bg-red-500 px-2 text-xs text-white'>
+                  {w.open}
+                </span>
+              ) : null}
+            </Button>
+          </Link>
+        </div>
+      </motion.div>
 
-      {/* Stats Grid - Bento style */}
+      {error && (
+        <Card className='border-red-500/30 bg-red-500/5'>
+          <CardContent className='p-4 text-sm text-red-600'>{error}</CardContent>
+        </Card>
+      )}
+
       <div className='grid grid-cols-2 gap-4 lg:grid-cols-4'>
         <StatCard
-          title='Total Users'
-          value={10400}
-          icon={Icons.users}
-          trend={{ value: '+12%', positive: true }}
+          title='Agent runs'
+          value={a?.runs_total ?? 0}
+          icon={Icons.zap}
+          note={`${a?.runs_24h ?? 0} in the last 24h`}
           colorClass='bg-brand-navy'
-          delay={0.1}
         />
         <StatCard
-          title='Active Sessions'
-          value={524}
-          icon={Icons.activity}
-          trend={{ value: '+8%', positive: true }}
+          title='Operators invoked'
+          value={a?.operator_invocations ?? 0}
+          icon={Icons.layers}
+          note={a?.avg_run_ms ? `${(a.avg_run_ms / 1000).toFixed(1)}s avg run` : 'no runs yet'}
           colorClass='bg-brand-cornflower'
-          delay={0.2}
         />
         <StatCard
-          title='Success Rate'
-          value={98}
+          title='Handled alone'
+          value={a?.autonomy_rate ?? 0}
           suffix='%'
           icon={Icons.checkCircle}
-          trend={{ value: '+2%', positive: true }}
+          note={`${w?.resolved ?? 0} needed a human`}
           colorClass='bg-brand-purple'
-          delay={0.3}
         />
         <StatCard
-          title='AI Confidence'
-          value={96}
-          suffix='%'
-          icon={Icons.sparkles}
-          trend={{ value: 'Stable', positive: true }}
-          colorClass='bg-gradient-to-br from-brand-navy to-brand-purple'
-          delay={0.4}
+          title='Awaiting a human'
+          value={w?.open ?? 0}
+          icon={Icons.inbox}
+          note={w?.avg_review_ms ? `${Math.round(w.avg_review_ms / 60000)}m avg review` : 'queue clear'}
+          colorClass='bg-gradient-to-br from-amber-500 to-orange-500'
+          tone={(w?.open ?? 0) > 0 ? 'alert' : undefined}
         />
       </div>
 
-      {/* Activity Chart - Full Width */}
-      <motion.div variants={itemVariants}>
-        <ActivityChart className='col-span-12' />
-      </motion.div>
+      <div className='grid gap-6 lg:grid-cols-2'>
+        <motion.div variants={itemVariants}>
+          <Card className='h-full'>
+            <CardHeader className='pb-3'>
+              <CardTitle className='flex items-center gap-2 text-base'>
+                <Icons.clock className='h-4 w-4' />
+                Backlog by SLA
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {sla ? (
+                <>
+                  <SlaBar
+                    breached={sla.breached}
+                    atRisk={sla.at_risk}
+                    within={sla.within_sla}
+                  />
+                  <p className='mt-4 text-xs text-muted-foreground'>
+                    As recorded on the ticket at intake. Operator 5 recomputes this from
+                    business hours and regional holidays, and disagrees with the recorded
+                    label on most tickets.
+                  </p>
+                </>
+              ) : (
+                <p className='text-sm text-muted-foreground'>
+                  {sd?.error ?? 'Backlog unavailable'}
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
 
-      {/* System Diagnostics */}
-      <motion.div
-        className='grid gap-6 lg:grid-cols-12'
-        variants={itemVariants}
-      >
-        <DiagnosticsCard />
-      </motion.div>
+        <motion.div variants={itemVariants}>
+          <Card className='h-full'>
+            <CardHeader className='pb-3'>
+              <CardTitle className='flex items-center gap-2 text-base'>
+                <Icons.activity className='h-4 w-4' />
+                Recent agent runs
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              {runs.length === 0 ? (
+                <p className='py-6 text-center text-sm text-muted-foreground'>
+                  No runs yet. Use “Run the agent” to start one.
+                </p>
+              ) : (
+                runs.map((r) => <RunRow key={r.run_id} run={r} />)
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+      </div>
+
+      <div className='grid gap-6 lg:grid-cols-3'>
+        <motion.div variants={itemVariants}>
+          <Card className='h-full'>
+            <CardHeader className='pb-3'>
+              <CardTitle className='text-base'>Open work by team</CardTitle>
+            </CardHeader>
+            <CardContent className='space-y-2'>
+              {Object.entries(sd?.by_assignment_group ?? {}).map(([team, n]) => (
+                <div key={team} className='flex items-center justify-between text-sm'>
+                  <span className='text-muted-foreground'>{team}</span>
+                  <span className='font-medium tabular-nums'>{n}</span>
+                </div>
+              ))}
+              {!sd?.by_assignment_group && (
+                <p className='text-sm text-muted-foreground'>Unavailable</p>
+              )}
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        <motion.div variants={itemVariants}>
+          <Card className='h-full'>
+            <CardHeader className='pb-3'>
+              <CardTitle className='text-base'>Exceptions by type</CardTitle>
+            </CardHeader>
+            <CardContent className='space-y-2'>
+              {Object.entries(w?.by_type ?? {}).length === 0 && (
+                <p className='text-sm text-muted-foreground'>
+                  Nothing has needed a human yet.
+                </p>
+              )}
+              {Object.entries(w?.by_type ?? {}).map(([type, n]) => (
+                <div key={type} className='flex items-center justify-between text-sm'>
+                  <span className='capitalize text-muted-foreground'>
+                    {type.replace(/_/g, ' ')}
+                  </span>
+                  <span className='font-medium tabular-nums'>{n}</span>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        </motion.div>
+
+        <motion.div variants={itemVariants}>
+          <Card className='h-full'>
+            <CardHeader className='pb-3'>
+              <CardTitle className='text-base'>Governance</CardTitle>
+            </CardHeader>
+            <CardContent className='space-y-2 text-sm'>
+              <div className='flex items-center justify-between'>
+                <span className='text-muted-foreground'>Active policies</span>
+                <span className='font-medium tabular-nums'>
+                  {kpis?.policies.active ?? 0} / {kpis?.policies.total ?? 0}
+                </span>
+              </div>
+              <div className='flex items-center justify-between'>
+                <span className='text-muted-foreground'>Runs awaiting a human</span>
+                <span className='font-medium tabular-nums'>{a?.awaiting_human ?? 0}</span>
+              </div>
+              <div className='flex items-center justify-between'>
+                <span className='text-muted-foreground'>Failed runs</span>
+                <span className='font-medium tabular-nums'>{a?.failed ?? 0}</span>
+              </div>
+              <p className='pt-2 text-xs text-muted-foreground'>
+                Every policy evaluation is recorded with the threshold as it stood at the
+                moment of the decision.
+              </p>
+            </CardContent>
+          </Card>
+        </motion.div>
+      </div>
     </motion.div>
   )
 }
