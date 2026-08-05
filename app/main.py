@@ -45,6 +45,7 @@ from .routers import (
     exceptions_router,
     health_router,
     insights_router,
+    integrations_router,
     policies_router,
     items_router,
 )
@@ -170,6 +171,9 @@ api_router.include_router(policies_router)
 
 # AI Insights — patterns computed from what the agent processed
 api_router.include_router(insights_router)
+
+# Data Manager — live registry of connected systems
+api_router.include_router(integrations_router)
 
 # Authorization pattern examples
 api_router.include_router(examples_router)

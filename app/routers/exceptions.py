@@ -204,10 +204,26 @@ async def resolve_exception(
     item.resolved_at = datetime.now(timezone.utc)
     db.commit()
 
-    # 3. On approval, let the agent try again — Operator 7 will now allow it.
+    # 3. On approval, let the agent try again.
+    #
+    # For a CAB exception the follow-up works because the change record has just
+    # been updated, so Operator 7 returns a different answer. A remediation
+    # exception has nothing equivalent to write: Operator 3 would reach the same
+    # low-confidence verdict and park the ticket again, leaving the reviewer in a
+    # loop. A human approval is exactly the missing confidence, so the threshold
+    # is waived FOR THIS RUN ONLY — passed as an override, never written to the
+    # policy, so the rule the desk operates under is unchanged.
     follow_up: Optional[str] = None
     if approved and body.rerun and item.primary_issue_key:
-        inputs = resolve_inputs(db, {"target_issue_key": item.primary_issue_key})
+        overrides: dict[str, Any] = {"target_issue_key": item.primary_issue_key}
+        if not change_id:
+            overrides["kb_confidence_threshold"] = 0
+            log.info(
+                "remediation approved by %s for %s — waiving the confidence bar for this run",
+                body.resolved_by,
+                item.primary_issue_key,
+            )
+        inputs = resolve_inputs(db, overrides)
         parent = db.query(AgentRun).get(item.agent_run_id) if item.agent_run_id else None
         run = AgentRun(
             run_id=str(uuid.uuid4()),

@@ -70,6 +70,7 @@ const navItems: NavSection[] = [
     items: [
       { href: '/ai/policies', label: 'AI Policies', icon: Icons.brain },
       { href: '/ai/insights', label: 'AI Insights', icon: Icons.lightbulb },
+      { href: '/ai/data-manager', label: 'Data Manager', icon: Icons.network },
     ],
   },
   {

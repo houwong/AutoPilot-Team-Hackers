@@ -15,6 +15,7 @@ from .exceptions import router as exceptions_router
 from .health import router as health_router
 from .policies import router as policies_router
 from .insights import router as insights_router
+from .integrations import router as integrations_router
 from .items import router as items_router
 
 __all__ = [
@@ -29,4 +30,5 @@ __all__ = [
     "dashboard_router",
     "policies_router",
     "insights_router",
+    "integrations_router",
 ]
