@@ -13,6 +13,7 @@ from .examples import router as examples_router
 from .dashboard import router as dashboard_router
 from .exceptions import router as exceptions_router
 from .health import router as health_router
+from .policies import router as policies_router
 from .items import router as items_router
 
 __all__ = [
@@ -25,4 +26,5 @@ __all__ = [
     "agent_router",
     "exceptions_router",
     "dashboard_router",
+    "policies_router",
 ]

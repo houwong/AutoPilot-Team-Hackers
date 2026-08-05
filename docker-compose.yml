@@ -67,11 +67,22 @@ services:
       # enable hot reload; prod keeps the built server.
       - NODE_ENV=${FRONTEND_NODE_ENV:-production}
     volumes:
-      # Mounted so edits are picked up without a rebuild. Harmless under the
-      # prod target, which serves .next and ignores these.
+      # Mounted so edits are picked up without a rebuild under the dev target.
+      # The prod target serves .next and ignores them for rendering — but they
+      # still let `npx tsc --noEmit` run against the real source, which is worth
+      # keeping: it has caught errors the browser would not have surfaced until
+      # the page was opened.
       - ./frontend/src:/app/src
       - ./frontend/public:/app/public
       - ./frontend/next.config.ts:/app/next.config.ts
+      - ./frontend/tsconfig.json:/app/tsconfig.json
+      # NextAuth Session augmentation lives here; without it every page that
+      # reads session.roles or session.accessToken fails to typecheck.
+      - ./frontend/types:/app/types
+      # Do NOT bind-mount next-env.d.ts. Next.js generates it, so it can be
+      # absent when compose starts — and Docker creates a DIRECTORY for a
+      # missing bind source, which then breaks `npm run build` with
+      # "EISDIR: illegal operation on a directory".
     env_file:
       - .env
     depends_on:
