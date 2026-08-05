@@ -229,26 +229,26 @@ async def _consume(run_pk: int, workflow_id: str, inputs: dict[str, Any]) -> Non
             elif ev.event == EV_RESULT:
                 # Step names only appear here; backfill them onto the rows.
                 names = ev.step_names
-                for row in by_activity.values():
+                for row in by_step.values():
                     if row.step_id in names:
                         row.operator_name = names[row.step_id]
                 run.result = ev.data if isinstance(ev.data, dict) else {"raw": ev.raw}
                 run.status = RunStatus.SUCCEEDED.value
+                # Finalise here as well as after the loop. The stream does not
+                # always terminate cleanly once `result` has arrived, and a run
+                # left without ended_at reports no duration on the dashboard.
+                _finalise(run)
                 db.commit()
 
             elif ev.event == EV_ERROR:
                 run.status = RunStatus.FAILED.value
                 run.error = ev.raw[:4000]
+                _finalise(run)
                 db.commit()
 
-        run.ended_at = datetime.now(timezone.utc)
-        if run.started_at:
-            started = run.started_at
-            if started.tzinfo is None:
-                started = started.replace(tzinfo=timezone.utc)
-            run.duration_ms = (run.ended_at - started).total_seconds() * 1000
         if run.status == RunStatus.RUNNING.value:
             run.status = RunStatus.SUCCEEDED.value
+        _finalise(run)
         db.commit()
         log.info("agent run %s finished: %s (%d steps)", run.run_id, run.status, seq)
 
@@ -257,7 +257,7 @@ async def _consume(run_pk: int, workflow_id: str, inputs: dict[str, Any]) -> Non
         run = db.query(AgentRun).get(run_pk)
         run.status = RunStatus.FAILED.value
         run.error = str(exc)[:4000]
-        run.ended_at = datetime.now(timezone.utc)
+        _finalise(run)
         db.commit()
     except Exception:  # noqa: BLE001 - never let a background task die silently
         log.exception("unexpected failure while consuming the Auto stream")
@@ -366,6 +366,20 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
 _SUB_RUN_RE = re.compile(r"/runs/([0-9a-f-]{20,})", re.I)
 
 
+def _finalise(run: AgentRun) -> None:
+    """Stamp `ended_at` and `duration_ms`. Idempotent — safe to call more than once."""
+    if run.ended_at is None:
+        run.ended_at = datetime.now(timezone.utc)
+    if run.duration_ms is None and run.started_at:
+        started = run.started_at
+        if started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        ended = run.ended_at
+        if ended.tzinfo is None:
+            ended = ended.replace(tzinfo=timezone.utc)
+        run.duration_ms = (ended - started).total_seconds() * 1000
+
+
 async def _step_result(
     client: AutoClient, by_step: dict[str, OperatorExecution], step_id: str
 ) -> dict:
@@ -471,7 +485,7 @@ async def _park_for_human(
     db.add(item)
 
     run.status = RunStatus.AWAITING_HUMAN.value
-    run.ended_at = datetime.now(timezone.utc)
+    _finalise(run)
     db.commit()
     log.info("run %s parked for human review: %s (%s)", run.run_id, title, etype)
 
