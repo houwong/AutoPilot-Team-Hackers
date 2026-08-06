@@ -462,6 +462,49 @@ async def _step_result(
         return {}
 
 
+def reclaim_orphaned_runs() -> int:
+    """
+    Mark runs abandoned by a dead process as failed. Call once at startup.
+
+    _consume drives a run from an in-process background task, so any restart —
+    deploy, crash, `docker compose restart` — abandons whatever it was
+    streaming. Nothing revisits that row afterwards, so it counts as in-flight
+    on the dashboard forever: one run sat at 'running' from 4 to 6 Aug across
+    dozens of restarts, inflating the in-progress count and dragging the
+    autonomy rate.
+
+    Such a run genuinely cannot be recovered. Auto has no webhook to call us
+    back and a Workflow API key cannot list run history, so the SSE stream that
+    carried its events is the only record and it died with the process.
+    Recording that honestly is the only correct outcome.
+
+    Runs parked at a human form are untouched — they carry awaiting_human, not
+    running, and are waiting on a person rather than on us.
+    """
+    db: Session = SessionLocal()
+    try:
+        orphaned = db.query(AgentRun).filter(AgentRun.status == RunStatus.RUNNING.value).all()
+        for run in orphaned:
+            run.status = RunStatus.FAILED.value
+            run.error = (
+                "Abandoned: the backend restarted while this run was streaming. "
+                "Auto cannot replay a run, so its events are unrecoverable."
+            )
+            # Stamp an end time but deliberately leave duration_ms null rather
+            # than calling _finalise. When the run actually died is unknown, and
+            # dating it to this restart invents the elapsed time in between: run
+            # 6 was reclaimed two days after it stalled and reported a 47-hour
+            # duration, which pushed the dashboard's average run time from 106
+            # seconds to 97 minutes.
+            if run.ended_at is None:
+                run.ended_at = datetime.now(timezone.utc)
+            log.warning("reclaimed orphaned run %s (started %s)", run.run_id, run.started_at)
+        db.commit()
+        return len(orphaned)
+    finally:
+        db.close()
+
+
 async def _backfill_parked_steps(
     client: AutoClient, db: Session, run: AgentRun, by_step: dict[str, OperatorExecution]
 ) -> None:

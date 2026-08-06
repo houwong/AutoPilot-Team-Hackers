@@ -27,6 +27,7 @@ AUDIT SYSTEM:
 import io
 import logging
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,6 +36,7 @@ from fastapi.responses import Response, StreamingResponse
 from .authz import AuthzEngine
 from .core.storage import GCSStorage, LocalStorage, StorageBackend
 from .middleware import AuditMiddleware
+from .routers.agent import reclaim_orphaned_runs
 from .routers import (
     admin_router,
     agent_router,
@@ -71,7 +73,24 @@ log.info(f"API Base Path: '{BASE_PATH}' (empty means root)")
 # APPLICATION SETUP
 # =============================================================================
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    An agent run is driven by an in-process task, so a restart abandons any run
+    mid-stream and leaves its row at 'running' forever. Reclaim those on the way
+    up, before the dashboard can report a dead run as in-flight.
+    """
+    try:
+        reclaimed = reclaim_orphaned_runs()
+        if reclaimed:
+            log.warning("reclaimed %d orphaned agent run(s) at startup", reclaimed)
+    except Exception:  # never let bookkeeping stop the API from serving
+        log.exception("could not reclaim orphaned agent runs")
+    yield
+
+
 app = FastAPI(
+    lifespan=lifespan,
     title="AutoPilot API",
     description="AI Command Center — Full-stack template with FastAPI, Next.js, and PostgreSQL",
     version="2.0.0",
