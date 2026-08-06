@@ -51,7 +51,7 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent", tags=["Agent"])
 
-ORCHESTRATOR_ID = os.getenv("AUTO_WF_ORCHESTRATOR", "019f7943-03f8-7000-8313-d9ae873d1197")
+ORCHESTRATOR_ID = os.getenv("AUTO_WF_ORCHESTRATOR", "019fd290-bdf0-7000-88b9-2b00a7dbb7fc")
 
 # Statuses Auto reports for a finished step.
 _DONE = {"completed", "succeeded", "success", "ok"}

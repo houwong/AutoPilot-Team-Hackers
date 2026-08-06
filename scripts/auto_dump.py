@@ -8,7 +8,7 @@ sys.path.insert(0, "/app")
 
 from app.services.auto_client import AutoClient  # noqa: E402
 
-WF_OP7 = "019fcac2-3eb9-7000-b024-b93084231a43"
+WF_OP7 = "019fd290-bdf0-7005-89da-5f9b78ece866"
 
 
 async def main() -> None:

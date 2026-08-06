@@ -65,13 +65,21 @@
 
 | | | |
 |---|---|---|
-| Op1 Backlog Sweep & Triage | `019f7441` | Round 1 |
-| Op2 Diagnosis | `019f7486` | Round 1 |
-| Op3 Safe Remediation | `019f7401` | Round 1 |
-| Op4 Requester Notification | `019f7432` | Round 1 — **now actually invoked** |
-| Op5 SLA & Business-Hours Engine | `019fc6bd` | new, fixture-verified |
-| Op6 Major-Incident Detector | `019fc7cb` | new, fixture-verified |
-| Op7 Change / CAB Approval Gate | `019fcac2` | new, fixture-verified |
+> **All workflow IDs changed on 5 Aug.** The workspace was rebuilt as
+> `IT Ticker Orchestrator - Manual Fixed V2` and every operator was recreated, so any ID
+> written down before that date is dead — the old orchestrator now returns
+> `{"error":"Workflow not found"}`. The IDs below are current.
+
+| operator | id |
+|---|---|
+| **Orchestrator** (Manual Fixed V2) | `019fd290-bdf0-7000-88b9-2b00a7dbb7fc` |
+| Op1 Backlog Sweep & Triage | `019fd290-bdf0-7003-9e19-5d53ec0cdbfb` |
+| Op2 Diagnosis | `019fd290-bdf0-7004-a60c-6d54283bad6c` |
+| Op3 Safe Remediation | `019fd290-bdf0-7006-b54c-d791ae3df769` |
+| Op4 Requester Notification | `019fd290-bdf0-7007-8472-91df0ddeab17` |
+| Op5 SLA & Business-Hours Engine | `019fd290-bdf0-7001-b84c-b24f8a66c031` |
+| Op6 Major-Incident Detector | `019fd290-bdf0-7002-992a-58afae950865` |
+| Op7 Change / CAB Approval Gate | `019fd290-bdf0-7005-89da-5f9b78ece866` |
 
 Orchestrator v13: parallel fan-out (Op5 ∥ Op6), fan-in at triage, three-way CAB gate before
 remediation, two-way branches at remediation and review, `target_issue_key` for on-demand runs.
