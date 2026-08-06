@@ -185,10 +185,24 @@ def main() -> int:
     #
     #    Both faults are invisible at runtime: the notification sends, Slack
     #    reports SUCCESS, and only the number is wrong.
-    for sid in ("step_6_notif_auto", "step_6_notif_escalated"):
+    #
+    #    Cover EVERY notification step, not the two that were noticed first.
+    #    step_6_notif_rejected carried the identical rename and the identical
+    #    "Medium" default for a whole session without being flagged, purely
+    #    because it was missing from this tuple — and it only surfaced when the
+    #    block branch was finally exercised. A check that inspects a subset of
+    #    the steps sharing a defect will certify the ones it skipped.
+    for sid in (
+        "step_6_notif_auto",
+        "step_6_notif_escalated",
+        "step_6_notif_rejected",
+        "step_6_notif_manual",
+    ):
         cell = (steps.get(sid, {}).get("subworkflow_call") or {}).get(
             "input_mapping_code_cell"
         ) or ""
+        if not cell:
+            continue
         at = cell.find('"priority"')
         expr = cell[at : at + 260] if at >= 0 else ""
         check(
@@ -197,14 +211,27 @@ def main() -> int:
             "reads ticket_data only, which step_1_sweep sets to None when the "
             "source row has no priority column",
         )
+        # Whether the rename is visible depends on the outcome this mapper
+        # sends. Of Operator 4's six steps only notify_human_review_both
+        # renders priority in Slack, and it is reached by outcome
+        # HUMAN_REVIEW_REQUIRED — which step_6_notif_escalated and
+        # step_6_notif_rejected both send. On those the wrong word reaches a
+        # human. step_6_notif_auto sends AUTO_RESOLVED, which routes to an
+        # email that never shows priority, so its rename is inert until that
+        # message changes.
+        visible = "HUMAN_REVIEW_REQUIRED" in cell
         check(
             '"Critical"' not in cell and "'Critical'" not in cell,
             f"{sid} does not rename priority",
             "a Highest->Critical table disagrees with the review form, Supabase "
-            "and Jira. Inert on step_6_notif_auto today — of Operator 4's six "
-            "steps only notify_human_review_both renders priority, and that is "
-            "fed by step_6_notif_escalated. It matters the moment the "
-            "auto-resolved message starts showing priority",
+            "and Jira, and nothing routes on the renamed value. "
+            + (
+                "This mapper sends HUMAN_REVIEW_REQUIRED, so the renamed word "
+                "reaches Slack"
+                if visible
+                else "Inert today — this mapper's outcome routes to a message "
+                "that does not render priority"
+            ),
         )
 
     # 9. The human review form must read priority the same way the notifications
