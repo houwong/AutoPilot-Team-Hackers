@@ -91,7 +91,37 @@ autopilot-template-backend-1      running
 autopilot-template-frontend-1     running
 ```
 
-### Step 6: Open Your Command Center
+### Step 6: Seed the Policies
+
+The agent reads its rules from the `policies` table on every run and passes them
+to Auto as workflow inputs. That table starts empty, so **this step is not
+optional** — without it the Policies page is blank and the agent falls back to
+whatever defaults are baked into the workflows, which is exactly the behaviour
+the Command Center exists to make editable.
+
+```bash
+docker compose exec backend python scripts/seed_policies.py
+```
+
+Expected: `policies created=21 updated=0 total=21`. Re-running is safe — it
+refreshes each policy's metadata but never overwrites a value you have edited.
+
+### Step 7: Check the Orchestrator Wiring
+
+Run this after any change to the Auto orchestrator, and before any demo:
+
+```bash
+docker compose exec backend python scripts/check_orchestrator.py
+```
+
+It reads the workflow definition and fails on faults that are invisible at
+runtime — a branch whose target can never run while Auto still reports success,
+a notification step with no inbound edge that therefore fires on every run, an
+output whitelist silently dropping fields an operator downstream depends on.
+Each check exists because that fault actually occurred. It exits non-zero, so it
+can gate a demo.
+
+### Step 8: Open Your Command Center
 
 | Service | URL | What it is |
 |---------|-----|------------|
