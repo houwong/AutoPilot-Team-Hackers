@@ -252,19 +252,31 @@ class AutoClient:
         return r.json()
 
     async def get_step_result(self, sub_run_id: str) -> dict:
-        """Parse the operator's structured output out of a sub-workflow run."""
+        """
+        Parse the operator's structured output out of a sub-workflow run.
+
+        Reads the activity runs in REVERSE. An operator's answer is produced by
+        its LAST step; earlier steps are fetches and intermediate work that also
+        emit parseable JSON. Operator 6 for example ends with the clusters, but
+        opens with `{"status": "success", "counts": {...}}` from its Supabase
+        fetch — taking the first parseable output returns the fetch summary and
+        the caller silently sees no clusters at all.
+        """
         run = await self.get_run(sub_run_id)
-        for activity in run.get("activityRuns") or []:
+        for activity in reversed(run.get("activityRuns") or []):
             outputs = activity.get("outputs")
-            if isinstance(outputs, dict):
-                inner = outputs.get("output")
-                if isinstance(inner, str) and inner.strip():
-                    try:
-                        return json.loads(inner)
-                    except json.JSONDecodeError:
-                        continue
-                if isinstance(inner, dict):
-                    return inner
+            if not isinstance(outputs, dict):
+                continue
+            inner = outputs.get("output")
+            if isinstance(inner, dict) and inner:
+                return inner
+            if isinstance(inner, str) and inner.strip():
+                try:
+                    parsed = json.loads(inner)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict) and parsed:
+                    return parsed
         return {}
 
     async def stream(

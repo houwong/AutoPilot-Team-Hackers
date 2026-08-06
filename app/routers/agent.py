@@ -498,15 +498,38 @@ async def _park_for_human(
         severity = Severity.WARNING.value
 
     # Attach the incident context if this ticket is part of a cluster.
+    #
+    # Operator 6's field names have changed across rebuilds — `member_keys` now,
+    # `child_issue_keys` before — so read both and normalise to one shape. The
+    # Workbench page renders from this, and a reviewer seeing a lone CAB
+    # approval instead of "head of a 23-ticket incident" is missing the single
+    # most important piece of context on the page.
     cluster = None
-    for c in (incidents.get("clusters") or []):
-        members = [c.get("parent_issue_key")] + list(c.get("child_issue_keys") or [])
+    for c in incidents.get("clusters") or []:
+        members = list(c.get("member_keys") or [])
+        if not members:
+            members = [c.get("parent_issue_key")] + list(c.get("child_issue_keys") or [])
         if issue_key and issue_key in members:
-            cluster = c
+            cluster = {
+                "parent_issue_key": c.get("parent_issue_key"),
+                "linked_incident_label": c.get("linked_incident_label") or c.get("name"),
+                "child_issue_keys": [k for k in members if k != c.get("parent_issue_key")],
+                "ticket_count": c.get("member_count") or c.get("ticket_count") or len(members),
+                "distinct_reporters": c.get("distinct_reporters"),
+                "vip_count": c.get("vip_count"),
+                "affected_assignment_groups": (
+                    c.get("assignment_groups") or c.get("affected_assignment_groups") or []
+                ),
+                "first_seen": c.get("first_seen"),
+                "last_seen": c.get("last_seen"),
+                "recommended_action": c.get("recommended_action"),
+                "rationale": c.get("rationale"),
+            }
             break
     if cluster:
         severity = Severity.CRITICAL.value
-        title = f"{title} — part of {cluster.get('linked_incident_label') or cluster.get('parent_issue_key')}"
+        label = cluster["linked_incident_label"] or cluster["parent_issue_key"]
+        title = f"{title} — part of {label} ({cluster['ticket_count']} tickets)"
 
     item = ExceptionItem(
         agent_run_id=run.id,
