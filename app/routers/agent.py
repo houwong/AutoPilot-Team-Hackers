@@ -38,6 +38,7 @@ from ..models.command_center import (
     RunStatus,
     Severity,
 )
+from ..services import supabase
 from ..services.auto_client import (
     EV_ACTIVITY,
     EV_ERROR,
@@ -46,6 +47,7 @@ from ..services.auto_client import (
     AutoClient,
     AutoError,
 )
+from ..services.supabase import SupabaseError
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +66,7 @@ HUMAN_STEP_ID = os.getenv("AUTO_HUMAN_STEP_ID", "step_4_rev")
 GATE_STEP_ID = os.getenv("AUTO_GATE_STEP_ID", "step_4_gate")
 INCIDENT_STEP_ID = os.getenv("AUTO_INCIDENT_STEP_ID", "step_0_incidents")
 REMEDIATION_STEP_ID = os.getenv("AUTO_REMEDIATION_STEP_ID", "step_3_rem")
+DIAGNOSIS_STEP_ID = os.getenv("AUTO_DIAGNOSIS_STEP_ID", "step_2_diag")
 
 
 # =============================================================================
@@ -278,6 +281,60 @@ async def _consume(run_pk: int, workflow_id: str, inputs: dict[str, Any]) -> Non
 # =============================================================================
 
 
+# Statuses meaning the ticket is finished. The agent must not act on these.
+CLOSED_STATUSES = {"resolved", "closed", "done", "cancelled", "canceled"}
+
+
+async def _refuse_closed_ticket(issue_key: str) -> None:
+    """
+    Refuse to target a ticket that is already finished.
+
+    Operator 1 excludes closed tickets from its eligible list — 88 of the 460 in
+    this dataset are Resolved, and it ranks the other 372. But a targeted run
+    bypasses that ranking entirely: step_1_sweep looks the key up, fails to find
+    it among the eligible, and fetches it straight from Supabase. The filter is
+    skipped precisely because the ticket was excluded by it.
+
+    The consequence is not theoretical. Targeting ITSM-2248 — "Keyboard
+    replacement", Resolved, "Approved remediation applied." — reopened it to In
+    Progress and overwrote its resolution with "Applying automated KB workaround
+    from article KB-100", an article about VPN. The run reported success and
+    parked for review, so nothing looked wrong from the outside.
+
+    Fixed here rather than in Auto because this is the boundary a request
+    crosses: refusing the run costs one Supabase read, while an operator edit
+    risks the orchestrator wiring, which has regressed on five of five recent
+    saves. Auto keeping its own guard would be better still — this is a floor,
+    not a ceiling.
+
+    A Supabase failure is NOT treated as a refusal. This guard exists to stop a
+    confident wrong action, and turning an outage into "no runs at all" trades
+    one failure for a worse one.
+    """
+    try:
+        rows = await supabase.select(
+            "issues",
+            {'"Issue key"': f"eq.{issue_key}", "select": 'status:"Status"'},
+        )
+    except SupabaseError as exc:
+        log.warning("could not verify %s before running: %s", issue_key, exc)
+        return
+
+    if not rows:
+        raise HTTPException(status_code=404, detail=f"{issue_key} does not exist")
+
+    status = str(rows[0].get("status") or "").strip()
+    if status.lower() in CLOSED_STATUSES:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{issue_key} is {status}. The agent does not act on closed "
+                "tickets — remediation would reopen it and overwrite its "
+                "resolution."
+            ),
+        )
+
+
 @router.post("/runs", response_model=RunSummary, status_code=202)
 async def trigger_run(
     body: TriggerRequest,
@@ -294,6 +351,7 @@ async def trigger_run(
     workflow_id = body.workflow_id or ORCHESTRATOR_ID
     inputs = resolve_inputs(db, body.inputs)
     if body.target_issue_key:
+        await _refuse_closed_ticket(body.target_issue_key)
         inputs["target_issue_key"] = body.target_issue_key
 
     run = AgentRun(
@@ -626,6 +684,7 @@ async def _park_for_human(
     gate = await _step_result(client, by_step, GATE_STEP_ID)
     remediation = await _step_result(client, by_step, REMEDIATION_STEP_ID)
     incidents = await _step_result(client, by_step, INCIDENT_STEP_ID)
+    diagnosis = await _step_result(client, by_step, DIAGNOSIS_STEP_ID)
 
     issue_key = (
         gate.get("issue_key")
@@ -647,6 +706,32 @@ async def _park_for_human(
         title = f"Remediation needs review for {issue_key}"
         recommendation = remediation.get("reason") or remediation.get("outcome") or ""
         severity = Severity.WARNING.value
+
+    # Warn when the proposed fix has no diagnostic basis.
+    #
+    # Operator 3 returns kb_article_id and workaround_for_requester even when
+    # Operator 2 reported no match at all. ITSM-2020 ("Monitor flickering") was
+    # diagnosed kb_match_found=false, kb_article_id=null, kb_confidence=0.0 —
+    # and the review item still offered "KB-100 / Roll back NIC driver / apply
+    # hotfix". KB-100 is "VPN drops after Windows security update", and no
+    # article covers monitor flickering. Approving it wrote a VPN driver
+    # rollback onto a monitor ticket.
+    #
+    # The gate did its job and the run did stop for a person. The failure is
+    # that the person was handed a specific, plausible, fabricated fix with no
+    # way to tell — a human-in-the-loop failure of information rather than of
+    # control, and the harder kind to catch. Surfaced here rather than fixed in
+    # Operator 3 because this is the surface the reviewer actually reads.
+    proposed_kb = remediation.get("kb_article_id")
+    if proposed_kb and diagnosis and not diagnosis.get("kb_match_found"):
+        severity = Severity.CRITICAL.value
+        unsupported = (
+            f"UNVERIFIED FIX: diagnosis found no knowledge-base match "
+            f"(confidence {diagnosis.get('kb_confidence', 0)}), yet remediation "
+            f"proposes {proposed_kb}. Confirm the article actually applies to "
+            f"'{diagnosis.get('summary') or issue_key}' before approving."
+        )
+        recommendation = f"{unsupported} {recommendation}".strip()
 
     # Attach the incident context if this ticket is part of a cluster.
     #
@@ -696,6 +781,7 @@ async def _park_for_human(
         context={
             "gate": gate,
             "remediation": remediation,
+            "diagnosis": diagnosis,
             "incident": cluster,
             "policies_at_run": run.inputs,
         },
