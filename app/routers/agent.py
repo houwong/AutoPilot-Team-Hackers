@@ -462,6 +462,77 @@ async def _step_result(
         return {}
 
 
+async def _backfill_parked_steps(
+    client: AutoClient, db: Session, run: AgentRun, by_step: dict[str, OperatorExecution]
+) -> None:
+    """
+    Record the steps that finish after we detach from the stream.
+
+    Parking closes the stream the moment Auto's human form opens, but the
+    escalate branch fans out: step_4_gate routes to step_4_rev AND to
+    step_6_notif_escalated, and the notification completes a few seconds later.
+    Without this the run timeline stops at the form, so the Workbench shows a
+    CAB approval waiting with no evidence anyone was told — the run looks like
+    it silently dropped the escalation, which is exactly what the dead-branch
+    bug used to do.
+
+    Polls rather than reading once: the notification took 8-20s to finish after
+    step_4_rev started waiting. This holds the session for under a minute, not
+    for the reviewer's thinking time, which is what detaching was protecting
+    against.
+    """
+    if not run.auto_run_id:
+        return
+    seq = max((r.sequence or 0) for r in by_step.values()) if by_step else 0
+    added: set[str] = set()
+    for _ in range(4):
+        await asyncio.sleep(8)
+        try:
+            detail = await client.get_run(run.auto_run_id)
+        except AutoError as exc:  # a missed notification must not fail the run
+            log.warning("backfill failed for run %s: %s", run.run_id, exc)
+            return
+        for activity in detail.get("activityRuns") or []:
+            step_id = activity.get("stepId")
+            outputs = activity.get("outputs") or {}
+            # `conditionMet` marks a branch evaluation, not a step's own work.
+            if not step_id or "conditionMet" in outputs:
+                continue
+            row = by_step.get(step_id)
+            if row is None:
+                seq += 1
+                row = OperatorExecution(
+                    agent_run_id=run.id,
+                    operator_name=step_id,
+                    step_id=step_id,
+                    sequence=seq,
+                    started_at=datetime.now(timezone.utc),
+                )
+                db.add(row)
+                by_step[step_id] = row
+                added.add(step_id)
+            elif step_id not in added:
+                # Streamed rows are authoritative; never overwrite them. This
+                # also leaves step_4_rev showing that it is still waiting.
+                continue
+            # Keep polling our own rows: the first read usually catches the
+            # notification mid-flight, and a row frozen at 'running' reads as a
+            # hung step rather than a delivered message.
+            row.status = activity.get("status")
+            if outputs:
+                row.output = outputs
+            if row.status in _DONE or row.status in _FAILED:
+                row.ended_at = datetime.now(timezone.utc)
+        db.commit()
+        if all(
+            (by_step[s].status in _DONE or by_step[s].status in _FAILED) for s in added
+        ) and added:
+            break
+    for step_id in added:
+        log.info("run %s backfilled %s (%s)", run.run_id, step_id,
+                 by_step[step_id].status)
+
+
 async def _park_for_human(
     client: AutoClient, db: Session, run: AgentRun, by_step: dict[str, OperatorExecution]
 ) -> None:
@@ -559,6 +630,10 @@ async def _park_for_human(
     _finalise(run)
     db.commit()
     log.info("run %s parked for human review: %s (%s)", run.run_id, title, etype)
+
+    # The Workbench item exists and the reviewer can act; anything below is
+    # timeline completeness, so it runs after the commit above.
+    await _backfill_parked_steps(client, db, run, by_step)
 
 
 def _summarise(run: AgentRun, operator_count: int) -> dict:
