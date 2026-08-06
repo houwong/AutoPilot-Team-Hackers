@@ -215,6 +215,7 @@ export default function DashboardPage() {
   const [runs, setRuns] = useState<AgentRun[]>([])
   const [error, setError] = useState<string | null>(null)
   const [triggering, setTriggering] = useState(false)
+  const [target, setTarget] = useState('')
 
   const refresh = useCallback(async () => {
     try {
@@ -241,7 +242,13 @@ export default function DashboardPage() {
   async function trigger() {
     setTriggering(true)
     try {
-      await agent.trigger({ trigger: 'manual' })
+      // Blank means "take the top of the queue"; a key runs that specific
+      // ticket. The brief warns to expect a judge asking for a case you did
+      // not rehearse, so this has to be reachable from the UI.
+      await agent.trigger({
+        trigger: 'manual',
+        target_issue_key: target.trim() || undefined,
+      })
       await refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not start a run')
@@ -279,14 +286,24 @@ export default function DashboardPage() {
             ) : null}
           </p>
         </div>
-        <div className='flex gap-2'>
+        <div className='flex flex-wrap items-center gap-2'>
+          <input
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !triggering) trigger()
+            }}
+            placeholder='Ticket key (blank = top of queue)'
+            aria-label='Target ticket key'
+            className='h-9 w-56 rounded-md border border-input bg-background px-3 font-mono text-sm'
+          />
           <Button onClick={trigger} disabled={triggering}>
             {triggering ? (
               <Icons.loader className='mr-2 h-4 w-4 animate-spin' />
             ) : (
               <Icons.zap className='mr-2 h-4 w-4' />
             )}
-            Run the agent
+            {target.trim() ? `Run ${target.trim()}` : 'Run the agent'}
           </Button>
           <Link href='/workbench'>
             <Button variant='outline'>

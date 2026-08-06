@@ -58,10 +58,10 @@ Operator workflow IDs, for reference:
 
 | operator | id |
 |---|---|
-| Op1 Backlog Sweep & Triage | `019f7441-4a4b-7000-b133-e05f2baea0c7` |
-| Op2 Diagnosis | `019f7486-e47c-7000-afa3-129bce27f4cd` |
-| Op3 Safe Remediation | `019f7401-8d0e-7000-ba92-2325d75fe3fd` |
-| Op4 Requester Notification | `019f7432-3c5b-7000-b62a-9ba69d7bcd1e` |
+| Op1 Backlog Sweep & Triage | `019fd290-bdf0-7003-9e19-5d53ec0cdbfb` |
+| Op2 Diagnosis | `019fd290-bdf0-7004-a60c-6d54283bad6c` |
+| Op3 Safe Remediation | `019fd290-bdf0-7006-b54c-d791ae3df769` |
+| Op4 Requester Notification | `019fd290-bdf0-7007-8472-91df0ddeab17` |
 | Op5 / Op6 / Op7 | see the Auto UI |
 
 ---

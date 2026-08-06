@@ -29,14 +29,14 @@ from app.services.auto_client import (  # noqa: E402
 )
 
 WORKFLOWS = {
-    "orchestrator": os.getenv("AUTO_WF_ORCHESTRATOR", "019f7943-03f8-7000-8313-d9ae873d1197"),
-    "op1": os.getenv("AUTO_WF_OP1", "019f7441-4a4b-7000-b133-e05f2baea0c7"),
-    "op2": os.getenv("AUTO_WF_OP2", "019f7486-e47c-7000-afa3-129bce27f4cd"),
-    "op3": os.getenv("AUTO_WF_OP3", "019f7401-8d0e-7000-ba92-2325d75fe3fd"),
-    "op4": os.getenv("AUTO_WF_OP4", "019f7432-3c5b-7000-b62a-9ba69d7bcd1e"),
-    "op5": os.getenv("AUTO_WF_OP5", "019fc6bd-52a8-7000-9431-db7dd141952d"),
-    "op6": os.getenv("AUTO_WF_OP6", "019fc7cb-a13c-7000-a21f-fe71dd03e414"),
-    "op7": os.getenv("AUTO_WF_OP7", "019fcac2-3eb9-7000-b024-b93084231a43"),
+    "orchestrator": os.getenv("AUTO_WF_ORCHESTRATOR", "019fd290-bdf0-7000-88b9-2b00a7dbb7fc"),
+    "op1": os.getenv("AUTO_WF_OP1", "019fd290-bdf0-7003-9e19-5d53ec0cdbfb"),
+    "op2": os.getenv("AUTO_WF_OP2", "019fd290-bdf0-7004-a60c-6d54283bad6c"),
+    "op3": os.getenv("AUTO_WF_OP3", "019fd290-bdf0-7006-b54c-d791ae3df769"),
+    "op4": os.getenv("AUTO_WF_OP4", "019fd290-bdf0-7007-8472-91df0ddeab17"),
+    "op5": os.getenv("AUTO_WF_OP5", "019fd290-bdf0-7001-b84c-b24f8a66c031"),
+    "op6": os.getenv("AUTO_WF_OP6", "019fd290-bdf0-7002-992a-58afae950865"),
+    "op7": os.getenv("AUTO_WF_OP7", "019fd290-bdf0-7005-89da-5f9b78ece866"),
 }
 
 # Inputs that make each target do something interesting, from the fixtures.
