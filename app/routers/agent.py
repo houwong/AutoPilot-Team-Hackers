@@ -206,6 +206,8 @@ async def _consume(run_pk: int, workflow_id: str, inputs: dict[str, Any]) -> Non
                         row.error = json.dumps(ev.payload)[:4000]
                 if (ev.attempt or 1) > 1:
                     row.input = {**(row.input or {}), "attempt": ev.attempt}
+                if ev.step_id in NOTIFICATION_STEPS and ev.status in _DONE:
+                    await _persist_notification_result(client, by_step, ev.step_id)
                 db.commit()
 
                 # --- the pause ---------------------------------------------
@@ -462,6 +464,39 @@ async def _step_result(
         return {}
 
 
+# The orchestrator steps that delegate to Operator 4.
+NOTIFICATION_STEPS = (
+    "step_6_notif_auto",
+    "step_6_notif_escalated",
+    "step_6_notif_rejected",
+    "step_6_notif_manual",
+)
+
+
+async def _persist_notification_result(
+    client: AutoClient, by_step: dict[str, OperatorExecution], step_id: str
+) -> None:
+    """
+    Store Operator 4's per-channel delivery result on the notification row.
+
+    A delegating step's own output is only a link to the sub-workflow run, so
+    the orchestrator step reads `completed` whether or not the message actually
+    went out. Operator 4 knows better — it returns slack_delivery_status and
+    email_delivery_status separately — and the Data Manager derives a channel's
+    health from exactly this.
+
+    Without it Outlook reported healthy while every send was failing on an
+    ErrorExceededMessageLimit quota, because nobody looked past the step status.
+    A false green on an integration panel is worse than an honest unknown.
+    """
+    row = by_step.get(step_id)
+    if row is None:
+        return
+    result = await _step_result(client, by_step, step_id)
+    if result:
+        row.output = {**(row.output or {}), "operator_result": result}
+
+
 def reclaim_orphaned_runs() -> int:
     """
     Mark runs abandoned by a dead process as failed. Call once at startup.
@@ -566,6 +601,8 @@ async def _backfill_parked_steps(
                 row.output = outputs
             if row.status in _DONE or row.status in _FAILED:
                 row.ended_at = datetime.now(timezone.utc)
+                if step_id in NOTIFICATION_STEPS:
+                    await _persist_notification_result(client, by_step, step_id)
         db.commit()
         if all(
             (by_step[s].status in _DONE or by_step[s].status in _FAILED) for s in added
