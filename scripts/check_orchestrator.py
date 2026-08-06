@@ -219,7 +219,15 @@ def main() -> int:
         # human. step_6_notif_auto sends AUTO_RESOLVED, which routes to an
         # email that never shows priority, so its rename is inert until that
         # message changes.
-        visible = "HUMAN_REVIEW_REQUIRED" in cell
+        #
+        # Match the literal only where it is ASSIGNED as the outcome, not
+        # anywhere in the cell: step_6_notif_manual lists HUMAN_REVIEW_REQUIRED
+        # in an outcome_style_map used purely to pick a badge colour, and a
+        # substring test read that as "this mapper escalates". It actually
+        # sends AUTO_RESOLVED or VERIFICATION_FAILED, neither of which renders
+        # priority.
+        at_outcome = cell.find('"outcome"')
+        visible = "HUMAN_REVIEW_REQUIRED" in cell[at_outcome : at_outcome + 120]
         check(
             '"Critical"' not in cell and "'Critical'" not in cell,
             f"{sid} does not rename priority",
