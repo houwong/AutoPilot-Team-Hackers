@@ -206,6 +206,8 @@ async def _consume(run_pk: int, workflow_id: str, inputs: dict[str, Any]) -> Non
                         row.error = json.dumps(ev.payload)[:4000]
                 if (ev.attempt or 1) > 1:
                     row.input = {**(row.input or {}), "attempt": ev.attempt}
+                if ev.step_id in NOTIFICATION_STEPS and ev.status in _DONE:
+                    await _persist_notification_result(client, by_step, ev.step_id)
                 db.commit()
 
                 # --- the pause ---------------------------------------------
@@ -462,6 +464,155 @@ async def _step_result(
         return {}
 
 
+# The orchestrator steps that delegate to Operator 4.
+NOTIFICATION_STEPS = (
+    "step_6_notif_auto",
+    "step_6_notif_escalated",
+    "step_6_notif_rejected",
+    "step_6_notif_manual",
+)
+
+
+async def _persist_notification_result(
+    client: AutoClient, by_step: dict[str, OperatorExecution], step_id: str
+) -> None:
+    """
+    Store Operator 4's per-channel delivery result on the notification row.
+
+    A delegating step's own output is only a link to the sub-workflow run, so
+    the orchestrator step reads `completed` whether or not the message actually
+    went out. Operator 4 knows better — it returns slack_delivery_status and
+    email_delivery_status separately — and the Data Manager derives a channel's
+    health from exactly this.
+
+    Without it Outlook reported healthy while every send was failing on an
+    ErrorExceededMessageLimit quota, because nobody looked past the step status.
+    A false green on an integration panel is worse than an honest unknown.
+    """
+    row = by_step.get(step_id)
+    if row is None:
+        return
+    result = await _step_result(client, by_step, step_id)
+    if result:
+        row.output = {**(row.output or {}), "operator_result": result}
+
+
+def reclaim_orphaned_runs() -> int:
+    """
+    Mark runs abandoned by a dead process as failed. Call once at startup.
+
+    _consume drives a run from an in-process background task, so any restart —
+    deploy, crash, `docker compose restart` — abandons whatever it was
+    streaming. Nothing revisits that row afterwards, so it counts as in-flight
+    on the dashboard forever: one run sat at 'running' from 4 to 6 Aug across
+    dozens of restarts, inflating the in-progress count and dragging the
+    autonomy rate.
+
+    Such a run genuinely cannot be recovered. Auto has no webhook to call us
+    back and a Workflow API key cannot list run history, so the SSE stream that
+    carried its events is the only record and it died with the process.
+    Recording that honestly is the only correct outcome.
+
+    Runs parked at a human form are untouched — they carry awaiting_human, not
+    running, and are waiting on a person rather than on us.
+    """
+    db: Session = SessionLocal()
+    try:
+        orphaned = db.query(AgentRun).filter(AgentRun.status == RunStatus.RUNNING.value).all()
+        for run in orphaned:
+            run.status = RunStatus.FAILED.value
+            run.error = (
+                "Abandoned: the backend restarted while this run was streaming. "
+                "Auto cannot replay a run, so its events are unrecoverable."
+            )
+            # Stamp an end time but deliberately leave duration_ms null rather
+            # than calling _finalise. When the run actually died is unknown, and
+            # dating it to this restart invents the elapsed time in between: run
+            # 6 was reclaimed two days after it stalled and reported a 47-hour
+            # duration, which pushed the dashboard's average run time from 106
+            # seconds to 97 minutes.
+            if run.ended_at is None:
+                run.ended_at = datetime.now(timezone.utc)
+            log.warning("reclaimed orphaned run %s (started %s)", run.run_id, run.started_at)
+        db.commit()
+        return len(orphaned)
+    finally:
+        db.close()
+
+
+async def _backfill_parked_steps(
+    client: AutoClient, db: Session, run: AgentRun, by_step: dict[str, OperatorExecution]
+) -> None:
+    """
+    Record the steps that finish after we detach from the stream.
+
+    Parking closes the stream the moment Auto's human form opens, but the
+    escalate branch fans out: step_4_gate routes to step_4_rev AND to
+    step_6_notif_escalated, and the notification completes a few seconds later.
+    Without this the run timeline stops at the form, so the Workbench shows a
+    CAB approval waiting with no evidence anyone was told — the run looks like
+    it silently dropped the escalation, which is exactly what the dead-branch
+    bug used to do.
+
+    Polls rather than reading once: the notification took 8-20s to finish after
+    step_4_rev started waiting. This holds the session for under a minute, not
+    for the reviewer's thinking time, which is what detaching was protecting
+    against.
+    """
+    if not run.auto_run_id:
+        return
+    seq = max((r.sequence or 0) for r in by_step.values()) if by_step else 0
+    added: set[str] = set()
+    for _ in range(4):
+        await asyncio.sleep(8)
+        try:
+            detail = await client.get_run(run.auto_run_id)
+        except AutoError as exc:  # a missed notification must not fail the run
+            log.warning("backfill failed for run %s: %s", run.run_id, exc)
+            return
+        for activity in detail.get("activityRuns") or []:
+            step_id = activity.get("stepId")
+            outputs = activity.get("outputs") or {}
+            # `conditionMet` marks a branch evaluation, not a step's own work.
+            if not step_id or "conditionMet" in outputs:
+                continue
+            row = by_step.get(step_id)
+            if row is None:
+                seq += 1
+                row = OperatorExecution(
+                    agent_run_id=run.id,
+                    operator_name=step_id,
+                    step_id=step_id,
+                    sequence=seq,
+                    started_at=datetime.now(timezone.utc),
+                )
+                db.add(row)
+                by_step[step_id] = row
+                added.add(step_id)
+            elif step_id not in added:
+                # Streamed rows are authoritative; never overwrite them. This
+                # also leaves step_4_rev showing that it is still waiting.
+                continue
+            # Keep polling our own rows: the first read usually catches the
+            # notification mid-flight, and a row frozen at 'running' reads as a
+            # hung step rather than a delivered message.
+            row.status = activity.get("status")
+            if outputs:
+                row.output = outputs
+            if row.status in _DONE or row.status in _FAILED:
+                row.ended_at = datetime.now(timezone.utc)
+                if step_id in NOTIFICATION_STEPS:
+                    await _persist_notification_result(client, by_step, step_id)
+        db.commit()
+        if all(
+            (by_step[s].status in _DONE or by_step[s].status in _FAILED) for s in added
+        ) and added:
+            break
+    for step_id in added:
+        log.info("run %s backfilled %s (%s)", run.run_id, step_id,
+                 by_step[step_id].status)
+
+
 async def _park_for_human(
     client: AutoClient, db: Session, run: AgentRun, by_step: dict[str, OperatorExecution]
 ) -> None:
@@ -498,15 +649,38 @@ async def _park_for_human(
         severity = Severity.WARNING.value
 
     # Attach the incident context if this ticket is part of a cluster.
+    #
+    # Operator 6's field names have changed across rebuilds — `member_keys` now,
+    # `child_issue_keys` before — so read both and normalise to one shape. The
+    # Workbench page renders from this, and a reviewer seeing a lone CAB
+    # approval instead of "head of a 23-ticket incident" is missing the single
+    # most important piece of context on the page.
     cluster = None
-    for c in (incidents.get("clusters") or []):
-        members = [c.get("parent_issue_key")] + list(c.get("child_issue_keys") or [])
+    for c in incidents.get("clusters") or []:
+        members = list(c.get("member_keys") or [])
+        if not members:
+            members = [c.get("parent_issue_key")] + list(c.get("child_issue_keys") or [])
         if issue_key and issue_key in members:
-            cluster = c
+            cluster = {
+                "parent_issue_key": c.get("parent_issue_key"),
+                "linked_incident_label": c.get("linked_incident_label") or c.get("name"),
+                "child_issue_keys": [k for k in members if k != c.get("parent_issue_key")],
+                "ticket_count": c.get("member_count") or c.get("ticket_count") or len(members),
+                "distinct_reporters": c.get("distinct_reporters"),
+                "vip_count": c.get("vip_count"),
+                "affected_assignment_groups": (
+                    c.get("assignment_groups") or c.get("affected_assignment_groups") or []
+                ),
+                "first_seen": c.get("first_seen"),
+                "last_seen": c.get("last_seen"),
+                "recommended_action": c.get("recommended_action"),
+                "rationale": c.get("rationale"),
+            }
             break
     if cluster:
         severity = Severity.CRITICAL.value
-        title = f"{title} — part of {cluster.get('linked_incident_label') or cluster.get('parent_issue_key')}"
+        label = cluster["linked_incident_label"] or cluster["parent_issue_key"]
+        title = f"{title} — part of {label} ({cluster['ticket_count']} tickets)"
 
     item = ExceptionItem(
         agent_run_id=run.id,
@@ -536,6 +710,10 @@ async def _park_for_human(
     _finalise(run)
     db.commit()
     log.info("run %s parked for human review: %s (%s)", run.run_id, title, etype)
+
+    # The Workbench item exists and the reviewer can act; anything below is
+    # timeline completeness, so it runs after the commit above.
+    await _backfill_parked_steps(client, db, run, by_step)
 
 
 def _summarise(run: AgentRun, operator_count: int) -> dict:

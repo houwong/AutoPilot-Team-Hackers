@@ -47,10 +47,26 @@ POLICIES = [
     ("stalled_days_threshold", "Stalled ticket threshold (days)", "number", "3",
      ["diagnose"], 70,
      "Days without progress before a ticket counts as stalled."),
+    # Ships EMPTY on purpose. The value inherited from Round 1 mapped request
+    # types to Ops_Access / Ops_Hardware / Ops_SaaS — none of which exist as
+    # assignment groups; the only four are App Support, Field Support,
+    # Network Ops and Service Desk. Every "Request access" ticket was therefore
+    # flagged mis-routed against a phantom group, and Operator 3 acted on it:
+    # it chose REASSIGN_TICKET over applying the KB fix and wrote "Ops_Access"
+    # into a live ticket. Auto-resolution succeeded and was wrong, which is
+    # worse than escalating.
+    #
+    # No mapping is correct here either: request type does not predict
+    # assignment group in this data — "Request access" splits 39/38/36/26
+    # across all four teams. Asserting a mapping produces noise, so mis-routing
+    # is not claimed unless a real signal exists.
     ("routing_mapping_json", "Request type to assignment group", "json",
-     '{"Request access": "Ops_Access", "Hardware Access": "Ops_Hardware", '
-     '"SaaS Access": "Ops_SaaS"}',
-     ["routing"], 80, "Mis-routing is detected against this mapping."),
+     '{}',
+     ["routing"], 80,
+     "Empty by default. Mis-routing is only detected when this maps request "
+     "types to real assignment groups; the Round 1 value pointed at groups that "
+     "do not exist and caused the agent to reassign tickets into a phantom "
+     "group."),
 
     # --- Major incident -----------------------------------------------------
     ("flood_threshold_count", "Major incident ticket threshold", "number", "5",

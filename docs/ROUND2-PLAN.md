@@ -275,6 +275,7 @@ PostgREST parses `name (…)` as a join. Alias awkward columns:
 
 | Risk | Mitigation |
 |---|---|
+| **The agent can write wrong data confidently** | It happened: with the Round 1 `routing_mapping_json`, Operator 3 auto-resolved `ITSM-2005` by reassigning it to `Ops_Access`, a group that does not exist. The run reported success. Ticket restored, mapping now ships empty. Check the ticket, not just the run status |
 | **Frontend not started with 3 days left** | Wednesday is frontend only. Workbench first, then dashboard, then Policies |
 | Insights not started; 15 points and a rubric line | Thursday. The data already exists in `agent_runs` and `policy_evaluations` — it is queries, not new plumbing |
 | All 8 workflows still drafts | Publish tonight. This has been open since Monday |
