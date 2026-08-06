@@ -228,6 +228,29 @@ def main() -> int:
         "default because step_1_sweep stores None under an existing key",
     )
 
+    # 10. The version Auto runs must be the version we just inspected.
+    #
+    #     Every check above reads GET /workflows/{id}, which returns the current
+    #     definition. What executes is the version flagged isDefault. They have
+    #     matched every time so far — `isDraft: True` only means an editor draft
+    #     session is open, it does not gate execution — but if they ever diverge,
+    #     this script would pass while the agent ran different code, which is the
+    #     worst failure mode available to it.
+    #
+    #     Compare as strings: `version` on the workflow is a str and
+    #     `versionNumber` on a version record is an int, so == is False even when
+    #     both read 33.
+    try:
+        versions = fetch(f"/workflows/{ORCH}/versions").get("versions") or []
+        default = next((v["versionNumber"] for v in versions if v.get("isDefault")), None)
+        check(
+            str(default) == str(doc.get("version")),
+            "the default version is the one checked",
+            f"checked v{doc.get('version')} but Auto runs v{default}",
+        )
+    except Exception as exc:  # noqa: BLE001
+        check(False, "the default version is the one checked", f"could not read versions: {exc}")
+
     width = max(len(n) for _, n, _ in results)
     failed = 0
     for ok, name, detail in results:
