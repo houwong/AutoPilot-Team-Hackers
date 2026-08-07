@@ -387,6 +387,12 @@ export default function WorkbenchPage() {
   const [toast, setToast] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // Bumped by every refresh so the open item is re-read too, not just the list.
+  // Without this, Refresh updated the queue while the panel the reviewer was
+  // actually looking at kept its old contents — so the button appeared to do
+  // nothing, and an item stayed showing as unapproved after being approved.
+  const [reloadKey, setReloadKey] = useState(0)
+
   const refresh = useCallback(async () => {
     try {
       const [list, s] = await Promise.all([
@@ -397,6 +403,7 @@ export default function WorkbenchPage() {
       setStats(s)
       setError(null)
       setSelected((cur) => cur ?? list[0]?.id ?? null)
+      setReloadKey((k) => k + 1)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not reach the Command Center API')
     } finally {
@@ -421,7 +428,8 @@ export default function WorkbenchPage() {
       .get(selected)
       .then(setDetail)
       .catch(() => setDetail(null))
-  }, [selected])
+    // reloadKey, so a refresh re-reads the open item as well as the queue.
+  }, [selected, reloadKey])
 
   return (
     <div className='space-y-6 p-6'>
