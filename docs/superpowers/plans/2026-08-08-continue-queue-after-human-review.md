@@ -244,7 +244,7 @@ Python compile exits 0
 No whitespace errors
 ```
 
-- [ ] **Step 2: Verify the live campaign without starting a ticket**
+- [x] **Step 2: Verify the live campaign without starting a ticket**
 
 ```powershell
 Invoke-RestMethod "http://localhost:8001/api/queue/campaigns/active" | ConvertTo-Json -Depth 10
@@ -255,6 +255,9 @@ Invoke-RestMethod "http://localhost:8001/api/agent/runs?status=running" | Conver
 Expected before activation: ITSM-2042 remains `awaiting_human`; later campaign items remain `pending`; no same-key duplicate run exists.
 
 - [ ] **Step 3: Activate only after explicit live-run approval**
+
+Live activation remains intentionally unchecked: no live Queue tick has been
+started in this implementation session.
 
 Before recreating the backend container, temporarily disable the scheduler so deployment cannot race a tick:
 
