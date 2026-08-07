@@ -204,16 +204,43 @@ function Detail({
             </CardTitle>
           </CardHeader>
           <CardContent className='pt-0'>
-            <Field
-              label='Change'
-              value={<span className='font-mono'>{gate.change_id ?? '—'}</span>}
-            />
-            <Field label='Risk' value={gate.risk} />
-            <Field label='Status' value={gate.status} />
-            <Field label='CAB required' value={gate.cab_approval_required ? 'Yes' : 'No'} />
-            <Field label='Approver' value={gate.approver ?? 'Not yet approved'} />
-            {(gate.rollback_count ?? 0) > 0 && (
-              <Field label='Prior rollbacks' value={gate.rollback_count} />
+            {/* Without a change record, Risk / Status / CAB / Approver describe
+                nothing. Showing "Not yet approved" there invented a pending
+                approval that does not exist and read as if the Approve button
+                had failed. */}
+            {gate.change_id ? (
+              <>
+                <Field
+                  label='Change'
+                  value={<span className='font-mono'>{gate.change_id}</span>}
+                />
+                <Field label='Risk' value={gate.risk} />
+                <Field label='Status' value={gate.status} />
+                <Field label='CAB required' value={gate.cab_approval_required ? 'Yes' : 'No'} />
+                <Field
+                  label='Approver'
+                  value={
+                    gate.approver ??
+                    (item.resolution
+                      ? `${item.resolved_by ?? 'a reviewer'} — recorded here`
+                      : 'Not yet approved')
+                  }
+                />
+                {(gate.rollback_count ?? 0) > 0 && (
+                  <Field label='Prior rollbacks' value={gate.rollback_count} />
+                )}
+                <p className='mt-3 text-xs text-muted-foreground'>
+                  These are the values Operator 7 read when the run happened, kept
+                  as a record of what the decision was based on. They do not
+                  change when you approve.
+                </p>
+              </>
+            ) : (
+              <p className='text-sm text-muted-foreground'>
+                No change record exists for this ticket, so there was nothing for
+                the CAB gate to approve — it allowed the ticket on policy and the
+                review below is about the proposed remediation instead.
+              </p>
             )}
           </CardContent>
         </Card>

@@ -43,6 +43,7 @@ from ..models.command_center import (
     RunStatus,
 )
 from ..services import supabase
+from ..services.auto_client import AutoClient, AutoError
 from .agent import ORCHESTRATOR_ID, _consume, resolve_inputs
 
 log = logging.getLogger(__name__)
@@ -196,7 +197,50 @@ async def resolve_exception(
                 status_code=502, detail=f"Could not update change record: {exc}"
             ) from exc
 
-    # 2. Record the human decision.
+    # 2. Complete the Auto run that is waiting on this decision.
+    #
+    # A run parked at a human step waits for exactly one thing: that form. Auto
+    # renders it with buttons posting to
+    # /api/v1/user-forms/{activityRunId}/approve|reject and a single
+    # `review[notes]` field, so the Command Center can submit it on the
+    # reviewer's behalf and the original run continues into step_5_exec and its
+    # notification.
+    #
+    # This used to be missing, and the comment at the top of this file asserted
+    # it was impossible. The consequence was that approving recorded a decision
+    # and started a SEPARATE run while the original stayed parked forever — so
+    # the reviewer's decision never completed the workflow it belonged to, which
+    # is precisely what the human-in-the-loop gate asks for.
+    #
+    # Failure here is reported, not swallowed: if the form cannot be submitted
+    # the reviewer must know their decision did not reach the agent.
+    form_result: dict[str, Any] | None = None
+    parent_run = db.query(AgentRun).get(item.agent_run_id) if item.agent_run_id else None
+    if parent_run and parent_run.auto_run_id:
+        client = AutoClient()
+        try:
+            activity_id = await client.find_waiting_form(parent_run.auto_run_id)
+            if activity_id:
+                form_result = await client.submit_human_form(
+                    activity_id, approved=approved, notes=body.notes or ""
+                )
+                parent_run.status = RunStatus.SUCCEEDED.value
+                log.info(
+                    "submitted Auto review form for run %s (%s)",
+                    parent_run.run_id,
+                    "approved" if approved else "rejected",
+                )
+        except AutoError as exc:
+            log.error("could not submit the Auto review form: %s", exc)
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"Your decision was not sent to the agent: {exc}. "
+                    "Nothing has been recorded — try again."
+                ),
+            ) from exc
+
+    # 3. Record the human decision.
     item.status = ExceptionStatus.RESOLVED.value
     item.resolution = resolution
     item.resolution_notes = body.notes
@@ -204,15 +248,13 @@ async def resolve_exception(
     item.resolved_at = datetime.now(timezone.utc)
     db.commit()
 
-    # 3. On approval, let the agent try again.
+    # 4. Only start a NEW run when there was no parked run to continue.
     #
-    # For a CAB exception the follow-up works because the change record has just
-    # been updated, so Operator 7 returns a different answer. A remediation
-    # exception has nothing equivalent to write: Operator 3 would reach the same
-    # low-confidence verdict and park the ticket again, leaving the reviewer in a
-    # loop. A human approval is exactly the missing confidence, so the threshold
-    # is waived FOR THIS RUN ONLY — passed as an override, never written to the
-    # policy, so the rule the desk operates under is unchanged.
+    # Submitting the form above resumes the original run, which is the right
+    # outcome: the decision completes the workflow it belonged to. A second run
+    # is a fallback for the case where nothing was waiting — the run had already
+    # been abandoned, or the item predates form submission.
+    #
     # A re-run only helps when something the agent reads has actually changed.
     #
     # CAB case: the change record was just updated, so Operator 7 returns a
@@ -241,9 +283,20 @@ async def resolve_exception(
     )
     rerun_would_help = bool(change_id) or has_article
 
+    # The form was submitted, so the original run is already continuing. Adding
+    # a second run here would duplicate the work and file a duplicate item.
+    if form_result is not None:
+        rerun_would_help = False
+
     follow_up: Optional[str] = None
     no_rerun_reason: Optional[str] = None
-    if approved and body.rerun and item.primary_issue_key and not rerun_would_help:
+    if (
+        approved
+        and body.rerun
+        and item.primary_issue_key
+        and form_result is None
+        and not rerun_would_help
+    ):
         no_rerun_reason = (
             f"Approval recorded, but no follow-up run was triggered: diagnosis "
             f"found no knowledge-base article for {item.primary_issue_key}, and "
@@ -253,7 +306,13 @@ async def resolve_exception(
         )
         log.info("no re-run for %s — %s", item.primary_issue_key, no_rerun_reason)
 
-    if approved and body.rerun and item.primary_issue_key and rerun_would_help:
+    if (
+        approved
+        and body.rerun
+        and item.primary_issue_key
+        and form_result is None
+        and rerun_would_help
+    ):
         overrides: dict[str, Any] = {"target_issue_key": item.primary_issue_key}
         if not change_id:
             overrides["kb_confidence_threshold"] = 0
@@ -290,9 +349,16 @@ async def resolve_exception(
         "resolution": resolution,
         "resolved_by": item.resolved_by,
         "change_record_updated": cab_result,
+        "review_form_submitted": form_result is not None,
         "follow_up_run_id": follow_up,
         "message": (
-            "Approved. A follow-up run has been triggered; the change gate will now allow it."
+            (
+                f"{'Approved' if approved else 'Rejected'}. The paused run has been "
+                f"resumed with your decision and is continuing now."
+            )
+            if form_result is not None
+            else "Approved. A follow-up run has been triggered; the change gate "
+            "will now allow it."
             if follow_up
             else no_rerun_reason
             or "Recorded. No follow-up run was triggered."
