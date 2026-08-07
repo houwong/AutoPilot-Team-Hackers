@@ -104,6 +104,7 @@ export interface AgentRun {
   phase: string | null
   status: string | null
   issue_keys: string[] | null
+  selected_issue_key: string | null
   error: string | null
   duration_ms: number | null
   started_at: string | null
@@ -127,6 +128,56 @@ export interface RunDetail {
   inputs: Record<string, unknown> | null
   result: Record<string, unknown> | null
   operators: OperatorStep[]
+}
+
+export type QueueCampaignStatus = 'preview' | 'running' | 'paused' | 'completed' | 'cancelled'
+export type QueueItemState =
+  | 'preview'
+  | 'pending'
+  | 'running'
+  | 'awaiting_human'
+  | 'auto_remediated'
+  | 'human_approved'
+  | 'blocked'
+  | 'human_rejected'
+  | 'failed'
+  | 'skipped_closed'
+  | 'cancelled'
+  | 'completed_unknown'
+
+export interface QueueItem {
+  id: number
+  campaign_id: number
+  issue_key: string
+  source_status: string | null
+  source_priority: string | null
+  source_updated_at: string | null
+  state: QueueItemState
+  outcome: string | null
+  latest_run_id: string | null
+  attempt_count: number
+  last_error: string | null
+  requeued_from_id: number | null
+  requeue_reason: string | null
+  created_at: string | null
+  started_at: string | null
+  completed_at: string | null
+  history_source?: 'queue' | 'manual'
+}
+
+export interface QueueCampaign {
+  id: number
+  name: string
+  source: string
+  status: QueueCampaignStatus
+  batch_limit: number
+  created_by: string | null
+  created_at: string | null
+  confirmed_at: string | null
+  started_at: string | null
+  completed_at: string | null
+  last_tick_at: string | null
+  counts: Record<string, number>
 }
 
 // =============================================================================
@@ -168,6 +219,50 @@ export const agent = {
 
   trigger: (body: { target_issue_key?: string; trigger?: string }) =>
     apiClient.post<AgentRun>('/api/agent/runs', { trigger: 'manual', ...body }),
+}
+
+export const queue = {
+  preview: (limit = 10) =>
+    apiClient.post<{ campaign: QueueCampaign; items: QueueItem[]; warning: string }>(
+      '/api/queue/campaigns/preview',
+      { limit }
+    ),
+  confirm: (campaignId: number) =>
+    apiClient.post<{ campaign: QueueCampaign; tick: Record<string, unknown> }>(
+      `/api/queue/campaigns/${campaignId}/confirm`,
+      {}
+    ),
+  active: () =>
+    apiClient.get<{ campaign: QueueCampaign | null }>('/api/queue/campaigns/active'),
+  campaign: (campaignId: number) =>
+    apiClient.get<{ campaign: QueueCampaign; items: QueueItem[] }>(
+      `/api/queue/campaigns/${campaignId}`
+    ),
+  pause: (campaignId: number) =>
+    apiClient.post<{ campaign: QueueCampaign }>(`/api/queue/campaigns/${campaignId}/pause`, {}),
+  resume: (campaignId: number) =>
+    apiClient.post<{ campaign: QueueCampaign; tick: Record<string, unknown> }>(
+      `/api/queue/campaigns/${campaignId}/resume`,
+      {}
+    ),
+  cancel: (campaignId: number) =>
+    apiClient.post<{ campaign: QueueCampaign }>(`/api/queue/campaigns/${campaignId}/cancel`, {}),
+  tick: () => apiClient.post<Record<string, unknown>>('/api/queue/tick', {}),
+  items: (params: { page?: number; state?: string; search?: string } = {}) => {
+    const query = new URLSearchParams()
+    query.set('page_size', '100')
+    if (params.page) query.set('page', String(params.page))
+    if (params.state) query.set('state', params.state)
+    if (params.search) query.set('search', params.search)
+    return apiClient.get<{ items: QueueItem[]; total: number; page: number; page_size: number }>(
+      `/api/queue/items?${query.toString()}`
+    )
+  },
+  requeue: (itemId: number, reason: string) =>
+    apiClient.post<{ item: QueueItem; tick: Record<string, unknown> }>(
+      `/api/queue/items/${itemId}/requeue`,
+      { reason }
+    ),
 }
 
 // =============================================================================

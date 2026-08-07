@@ -18,6 +18,7 @@ from .policies import router as policies_router
 from .insights import router as insights_router
 from .integrations import router as integrations_router
 from .items import router as items_router
+from .queue import router as queue_router
 
 __all__ = [
     "health_router",
@@ -33,4 +34,5 @@ __all__ = [
     "policies_router",
     "insights_router",
     "integrations_router",
+    "queue_router",
 ]

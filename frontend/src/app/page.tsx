@@ -21,7 +21,7 @@ import { CardWatermark } from '@/components/ui/card-watermark'
 import { Icons } from '@/components/ui/icons'
 import { cn } from '@/lib/utils'
 import { apiClient } from '@/lib/api-client'
-import { type AgentRun, agent, relativeTime } from '@/lib/command-center'
+import { type AgentRun, agent, queue, relativeTime, type QueueCampaign } from '@/lib/command-center'
 
 // =============================================================================
 // TYPES
@@ -191,7 +191,7 @@ function RunRow({ run }: { run: AgentRun }) {
     <div className='flex items-center gap-3 border-b border-border/50 py-2 last:border-0'>
       <span className={cn('h-2 w-2 shrink-0 rounded-full', tone)} />
       <span className='min-w-0 flex-1 truncate text-sm'>
-        {run.issue_keys?.[0] ?? <span className='text-muted-foreground'>whole queue</span>}
+        {run.selected_issue_key ?? run.issue_keys?.[0] ?? <span className='text-muted-foreground'>legacy run</span>}
       </span>
       <span className='shrink-0 text-xs text-muted-foreground'>
         {run.operator_count} ops
@@ -213,18 +213,21 @@ function RunRow({ run }: { run: AgentRun }) {
 export default function DashboardPage() {
   const [kpis, setKpis] = useState<Kpis | null>(null)
   const [runs, setRuns] = useState<AgentRun[]>([])
+  const [activeQueue, setActiveQueue] = useState<QueueCampaign | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [triggering, setTriggering] = useState(false)
   const [target, setTarget] = useState('')
 
   const refresh = useCallback(async () => {
     try {
-      const [k, r] = await Promise.all([
+      const [k, r, q] = await Promise.all([
         apiClient.get<Kpis>('/api/dashboard/kpis'),
         agent.runs(8),
+        queue.active(),
       ])
       setKpis(k)
       setRuns(r)
+      setActiveQueue(q.campaign)
       setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not reach the Command Center API')
@@ -357,6 +360,23 @@ export default function DashboardPage() {
           tone={(w?.open ?? 0) > 0 ? 'alert' : undefined}
         />
       </div>
+
+      <motion.div variants={itemVariants}>
+        <Card>
+          <CardContent className='flex flex-wrap items-center justify-between gap-4 p-5'>
+            <div>
+              <p className='text-micro uppercase text-brand-muted'>Ticket queue</p>
+              <p className='mt-1 text-base font-semibold text-brand-navy'>
+                {activeQueue ? `${activeQueue.counts.processed ?? 0} of ${activeQueue.counts.total ?? 0} tickets completed` : 'No active ticket batch'}
+              </p>
+              <p className='mt-1 text-xs text-muted-foreground'>
+                {activeQueue ? `${activeQueue.counts.pending ?? 0} pending · ${activeQueue.counts.awaiting_human ?? 0} awaiting human` : 'Preview a batch before the scheduler starts it.'}
+              </p>
+            </div>
+            <Link href='/processed'><Button variant='outline'>Open processed history</Button></Link>
+          </CardContent>
+        </Card>
+      </motion.div>
 
       <div className='grid gap-6 lg:grid-cols-2'>
         <motion.div variants={itemVariants}>
