@@ -53,7 +53,12 @@ log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/agent", tags=["Agent"])
 
-ORCHESTRATOR_ID = os.getenv("AUTO_WF_ORCHESTRATOR", "019fd290-bdf0-7000-88b9-2b00a7dbb7fc")
+# The rebuilt orchestrator (6 Aug). The Round 1/2 original,
+# 019fd290-bdf0-7000-88b9-2b00a7dbb7fc, still exists and still runs — set
+# AUTO_WF_ORCHESTRATOR to it to roll back. Keep it: it is the only fallback if
+# the rebuild turns out to have a fault, and existing Workbench items link to
+# sub-workflow runs that live under it.
+ORCHESTRATOR_ID = os.getenv("AUTO_WF_ORCHESTRATOR", "019fd826-9991-7000-873c-ea6fca4c660b")
 
 # Statuses Auto reports for a finished step.
 _DONE = {"completed", "succeeded", "success", "ok"}

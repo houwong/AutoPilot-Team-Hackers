@@ -18,7 +18,7 @@ import sys
 import httpx
 
 BASE = os.getenv("AUTO_BASE_URL", "https://auto-workflow-api.supervity.ai")
-ORCH = os.getenv("AUTO_WF_ORCHESTRATOR", "019fd290-bdf0-7000-88b9-2b00a7dbb7fc")
+ORCH = os.getenv("AUTO_WF_ORCHESTRATOR", "019fd826-9991-7000-873c-ea6fca4c660b")
 
 
 def fetch(path: str) -> dict:
