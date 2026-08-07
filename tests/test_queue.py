@@ -316,3 +316,52 @@ def test_resolved_rejected_run_waits_for_rejected_notification(db):
     queue_service.synchronize_campaign(db, campaign)
     assert item.state == QueueItemState.HUMAN_REJECTED.value
     assert campaign.status == QueueCampaignStatus.COMPLETED.value
+
+
+def test_list_items_synchronizes_before_serializing_resolved_review(db):
+    """History reads must not race the active-campaign synchronization call."""
+    campaign = QueueCampaign(
+        name="history-sync",
+        source="manual",
+        status=QueueCampaignStatus.RUNNING.value,
+        batch_limit=1,
+    )
+    db.add(campaign)
+    db.flush()
+    run = AgentRun(run_id="run-list-sync", status=RunStatus.SUCCEEDED.value)
+    db.add(run)
+    db.flush()
+    item = QueueItem(
+        campaign_id=campaign.id,
+        issue_key="ITSM-LIST-SYNC",
+        state=QueueItemState.AWAITING_HUMAN.value,
+        latest_run_id=run.run_id,
+        attempt_count=1,
+    )
+    exception = ExceptionItem(
+        agent_run_id=run.id,
+        primary_issue_key="ITSM-LIST-SYNC",
+        status=ExceptionStatus.RESOLVED.value,
+        resolution="rejected",
+    )
+    db.add_all(
+        [
+            item,
+            exception,
+            OperatorExecution(
+                agent_run_id=run.id,
+                step_id="step_6_notif_rejected",
+                status="completed",
+            ),
+        ]
+    )
+    db.commit()
+
+    result = queue_router.list_items(
+        campaign_id=campaign.id,
+        page=1,
+        page_size=100,
+        db=db,
+    )
+
+    assert result["items"][0]["state"] == QueueItemState.HUMAN_REJECTED.value
