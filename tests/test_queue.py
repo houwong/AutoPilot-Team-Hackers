@@ -18,6 +18,7 @@ from app.models.command_center import (
     QueueItemState,
     RunStatus,
 )
+from app.routers import queue as queue_router
 from app.services import queue as queue_service
 
 
@@ -86,6 +87,57 @@ def test_classify_run_requires_a_recognized_terminal_step(db):
     db.add(run)
     db.commit()
     assert queue_service.classify_run(db, run) == QueueItemState.COMPLETED_UNKNOWN.value
+
+
+def test_parked_human_review_does_not_block_next_queue_tick(db):
+    campaign = QueueCampaign(
+        name="continue-after-review",
+        source="manual",
+        status=QueueCampaignStatus.RUNNING.value,
+        batch_limit=2,
+    )
+    db.add(campaign)
+    db.flush()
+    db.add_all(
+        [
+            QueueItem(
+                campaign_id=campaign.id,
+                issue_key="ITSM-REVIEW",
+                state=QueueItemState.AWAITING_HUMAN.value,
+                attempt_count=1,
+            ),
+            QueueItem(
+                campaign_id=campaign.id,
+                issue_key="ITSM-NEXT",
+                state=QueueItemState.PENDING.value,
+                attempt_count=0,
+            ),
+        ]
+    )
+    db.commit()
+
+    assert queue_router._active_run_item(db, campaign.id) is None
+
+
+def test_running_item_still_blocks_next_queue_tick(db):
+    campaign = QueueCampaign(
+        name="one-active-run",
+        source="manual",
+        status=QueueCampaignStatus.RUNNING.value,
+        batch_limit=2,
+    )
+    db.add(campaign)
+    db.flush()
+    running = QueueItem(
+        campaign_id=campaign.id,
+        issue_key="ITSM-RUNNING",
+        state=QueueItemState.RUNNING.value,
+        attempt_count=1,
+    )
+    db.add(running)
+    db.commit()
+
+    assert queue_router._active_run_item(db, campaign.id).id == running.id
 
 
 def test_classify_run_distinguishes_auto_block_and_human_outcomes(db):

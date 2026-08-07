@@ -47,14 +47,13 @@ class RequeueRequest(BaseModel):
 
 
 def _active_run_item(db: Session, campaign_id: int) -> QueueItem | None:
+    # Human Review parks only its own ticket. A different pending ticket may
+    # continue, while create_agent_run still prevents same-key duplicates.
     return (
         db.query(QueueItem)
         .filter(
             QueueItem.campaign_id == campaign_id,
-            QueueItem.state.in_([
-                QueueItemState.RUNNING.value,
-                QueueItemState.AWAITING_HUMAN.value,
-            ]),
+            QueueItem.state == QueueItemState.RUNNING.value,
         )
         .order_by(QueueItem.id)
         .first()
