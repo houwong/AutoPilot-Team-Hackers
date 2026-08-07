@@ -279,6 +279,52 @@ class AutoClient:
                     return parsed
         return {}
 
+    async def find_waiting_form(self, run_id: str) -> Optional[str]:
+        """
+        The activity-run id of a human step currently waiting for a decision.
+
+        That id — not the form id — is what the approve/reject endpoints are
+        keyed on. Both appear in a parked run and they differ by a few
+        characters, which is an easy hour to lose.
+        """
+        run = await self.get_run(run_id)
+        for activity in run.get("activityRuns") or []:
+            if activity.get("status") == "waiting" and activity.get("userForm") is not None:
+                return str(activity.get("id"))
+        return None
+
+    async def submit_human_form(
+        self, activity_run_id: str, approved: bool, notes: str = ""
+    ) -> dict:
+        """
+        Submit Auto's human-review form, so the parked run continues.
+
+        A run stopped at a human step waits for this and nothing else. Without
+        it the Command Center could record a decision and start a *fresh* run,
+        but the original stayed parked forever — so the reviewer's decision
+        never actually completed the workflow it belonged to, which is the
+        thing the human-in-the-loop gate is asking for.
+
+        The endpoint and field name were read off the form Auto itself renders:
+        it posts to /api/v1/user-forms/{activityRunId}/approve or /reject with a
+        single `review[notes]` textarea. Note the id is the WAITING ACTIVITY
+        run, not the userForm id; both are present in a parked run.
+        """
+        action = "approve" if approved else "reject"
+        url = f"{self.base_url}/api/v1/user-forms/{activity_run_id}/{action}"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            r = await client.post(
+                url,
+                headers=_headers(),
+                files={"review[notes]": (None, notes or "")},
+            )
+        if r.status_code >= 400:
+            raise AutoError(f"submit_human_form {action} failed {r.status_code}: {r.text[:400]}")
+        try:
+            return r.json()
+        except json.JSONDecodeError:
+            return {"raw": r.text[:2000], "action": action}
+
     async def stream(
         self, workflow_id: str, inputs: dict[str, Any] | None = None
     ) -> AsyncIterator[AutoEvent]:
