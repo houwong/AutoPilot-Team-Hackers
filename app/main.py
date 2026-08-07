@@ -40,6 +40,7 @@ from .routers.agent import reclaim_orphaned_runs
 from .routers import (
     admin_router,
     agent_router,
+    ai_router,
     audit_router,
     auth_router,
     examples_router,
@@ -178,6 +179,9 @@ api_router.include_router(items_router)
 
 # Agent runs — trigger the Auto orchestrator and read run history
 api_router.include_router(agent_router)
+
+# AI Manager — answers questions from the agent's own records, no model behind it
+api_router.include_router(ai_router)
 
 # Workbench — the human exception queue
 api_router.include_router(exceptions_router)

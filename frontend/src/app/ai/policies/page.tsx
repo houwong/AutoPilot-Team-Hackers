@@ -21,7 +21,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Icons } from '@/components/ui/icons'
 import { cn } from '@/lib/utils'
-import { decisionClasses, relativeTime } from '@/lib/command-center'
+import { agent, decisionClasses, relativeTime } from '@/lib/command-center'
 
 // =============================================================================
 // TYPES
@@ -202,6 +202,14 @@ export default function PoliciesPage() {
   const [toast, setToast] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  // Run the agent from this page, so a change to a rule can be tried
+  // immediately on a chosen ticket. The target is deliberately NOT a policy: a
+  // policy persists and applies to every run, whereas this is the scope of one
+  // run. Storing it as a rule is what made an older orchestrator carry
+  // ITSM-2180 as a default and quietly target the same ticket every time.
+  const [target, setTarget] = useState('')
+  const [triggering, setTriggering] = useState(false)
+
   const refresh = useCallback(async () => {
     try {
       const [g, e] = await Promise.all([
@@ -220,6 +228,28 @@ export default function PoliciesPage() {
     refresh()
   }, [refresh])
 
+  const runAgent = useCallback(async () => {
+    setTriggering(true)
+    try {
+      const run = await agent.trigger({
+        target_issue_key: target.trim() || undefined,
+        trigger: 'manual',
+      })
+      setToast(
+        target.trim()
+          ? `Run started on ${target.trim()} with the current policy values.`
+          : `Run started on the top of the queue — run ${run.run_id.slice(0, 8)}.`
+      )
+    } catch (err) {
+      // A closed ticket is refused with 409 and an unknown one with 404. Show
+      // the reason rather than a generic failure: both are the agent declining
+      // deliberately, not something going wrong.
+      setError(err instanceof Error ? err.message : 'Could not start a run')
+    } finally {
+      setTriggering(false)
+    }
+  }, [target])
+
   const all = grouped?.groups.flatMap((g) => g.policies) ?? []
   const changed = all.filter((p) => p.is_modified).length
 
@@ -233,10 +263,30 @@ export default function PoliciesPage() {
             differently — no code, no redeploy.
           </p>
         </div>
-        <Button variant='outline' size='sm' onClick={refresh}>
-          <Icons.refresh className='mr-2 h-4 w-4' />
-          Refresh
-        </Button>
+        <div className='flex flex-wrap items-center gap-2'>
+          <input
+            value={target}
+            onChange={(e) => setTarget(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !triggering) runAgent()
+            }}
+            placeholder='Ticket key (blank = top of queue)'
+            aria-label='Target ticket key'
+            className='h-9 w-56 rounded-md border border-input bg-background px-3 font-mono text-sm'
+          />
+          <Button onClick={runAgent} disabled={triggering}>
+            {triggering ? (
+              <Icons.loader className='mr-2 h-4 w-4 animate-spin' />
+            ) : (
+              <Icons.zap className='mr-2 h-4 w-4' />
+            )}
+            {target.trim() ? `Run ${target.trim()}` : 'Run with these rules'}
+          </Button>
+          <Button variant='outline' size='sm' onClick={refresh}>
+            <Icons.refresh className='mr-2 h-4 w-4' />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {error && (

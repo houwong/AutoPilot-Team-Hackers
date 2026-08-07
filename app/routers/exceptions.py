@@ -213,8 +213,47 @@ async def resolve_exception(
     # loop. A human approval is exactly the missing confidence, so the threshold
     # is waived FOR THIS RUN ONLY — passed as an override, never written to the
     # policy, so the rule the desk operates under is unchanged.
+    # A re-run only helps when something the agent reads has actually changed.
+    #
+    # CAB case: the change record was just updated, so Operator 7 returns a
+    # different answer. Low-confidence WITH a matched article: waiving the
+    # threshold can tip it into acting. Low-confidence with NO article: nothing
+    # changes. Operator 3 needs an article to apply, and a threshold of 0 does
+    # not conjure one.
+    #
+    # ITSM-2325 ("Network issue") has no knowledge-base article. Approving it
+    # sent kb_confidence_threshold 0, Operator 3 returned HUMAN_REVIEW_REQUIRED
+    # with kb_article_id "" exactly as before, and the run filed a fresh
+    # identical exception. The reviewer approves, the item vanishes, a new one
+    # appears, forever — and from the outside it looks like the button does
+    # nothing.
+    #
+    # So: only re-run when the outcome can differ. Otherwise record the decision
+    # and say plainly that the agent has no fix to apply, which is the truth the
+    # reviewer needs in order to handle it themselves.
+    context = item.context or {}
+    diagnosis = context.get("diagnosis") or {}
+    remediation = context.get("remediation") or {}
+    has_article = bool(
+        (remediation.get("kb_article_id") or "").strip()
+        or (diagnosis.get("kb_article_id") or "").strip()
+        or diagnosis.get("kb_match_found")
+    )
+    rerun_would_help = bool(change_id) or has_article
+
     follow_up: Optional[str] = None
-    if approved and body.rerun and item.primary_issue_key:
+    no_rerun_reason: Optional[str] = None
+    if approved and body.rerun and item.primary_issue_key and not rerun_would_help:
+        no_rerun_reason = (
+            f"Approval recorded, but no follow-up run was triggered: diagnosis "
+            f"found no knowledge-base article for {item.primary_issue_key}, and "
+            f"there is no change record to approve. The agent has no fix to "
+            f"apply, so a re-run would reach the same conclusion and re-open "
+            f"this item. Handle this ticket manually."
+        )
+        log.info("no re-run for %s — %s", item.primary_issue_key, no_rerun_reason)
+
+    if approved and body.rerun and item.primary_issue_key and rerun_would_help:
         overrides: dict[str, Any] = {"target_issue_key": item.primary_issue_key}
         if not change_id:
             overrides["kb_confidence_threshold"] = 0
@@ -255,7 +294,8 @@ async def resolve_exception(
         "message": (
             "Approved. A follow-up run has been triggered; the change gate will now allow it."
             if follow_up
-            else "Recorded. No follow-up run was triggered."
+            else no_rerun_reason
+            or "Recorded. No follow-up run was triggered."
         ),
     }
 
