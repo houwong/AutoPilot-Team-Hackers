@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from ..core.database import get_db
 from ..models.command_center import (
     AgentRun,
+    ExceptionItem,
     QueueCampaign,
     QueueCampaignStatus,
     QueueItem,
@@ -316,7 +317,13 @@ def list_items(
             keys = [str(key) for key in run.issue_keys if key]
         if not keys:
             continue
-        run_state = classify_run(db, run)
+        exception = (
+            db.query(ExceptionItem)
+            .filter(ExceptionItem.agent_run_id == run.id)
+            .order_by(ExceptionItem.id.desc())
+            .first()
+        )
+        run_state = classify_run(db, run, exception)
         key = keys[0]
         synthetic = {
             "id": -run.id,

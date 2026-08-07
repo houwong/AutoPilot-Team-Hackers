@@ -12,9 +12,33 @@
 
 - [x] Feature branch created: `feature/ticket-queue-history`.
 - [x] Queue schema, backend queue service/API, AgentRun identity, Processed Tickets page, Dashboard summary, scheduler scripts, and runbook implemented.
-- [x] Database migration applied locally; 47 backend tests, TypeScript validation, and 37/37 Orchestrator checks pass.
+- [x] Database migration applied locally; 48 backend tests, TypeScript validation, production build, and 37/37 Orchestrator checks pass.
 - [x] Manual target runs reject duplicate active targets and unresolved Workbench items; Workbench follow-ups remain allowed.
+- [x] Controlled live branches verified: allow `ITSM-2005`, escalate/CAB `ITSM-2180`, block `ITSM-2065`.
+- [x] Queue preview/confirm, one-ticket tick, pause/cancel controls, explicit target linkage, and `/processed` history were exercised locally.
+- [x] Human rejection lifecycle verified with `ITSM-2020`: the original parked run completed, the rejected notification was recorded, and the queue outcome is `human_rejected`.
+- [x] Post-decision reconciliation now serializes parked-run backfills and prefers terminal activity rows, preventing a completed notification from being hidden by a stale duplicate `running` row.
 - [ ] A full multi-ticket batch is not exhausted automatically; it would modify real Supabase tickets and must be started only after reviewing the preview in the UI.
+
+### Fresh verification record
+
+The following commands were run on this branch after the final synchronization fix:
+
+```text
+docker compose exec -T backend pytest -q                         48 passed, 9 warnings
+docker compose exec -T backend python scripts/check_orchestrator.py 37/37 passed
+docker compose exec -T frontend npx tsc --noEmit                 exit 0
+docker compose run --rm -T frontend npx next build               exit 0 (22 routes)
+GET /api/health                                                  200
+GET /processed                                                    200
+POST /api/queue/tick (no active campaign)                         no_running_campaign
+```
+
+The live tests intentionally used only the known demonstration tickets. The
+CAB approval path was not approved during this pass because it changes
+`CHG-0001` to Implemented; the rejection path and the allow/block paths were
+still exercised. A complete automatic drain of all Supabase tickets remains a
+separate, destructive operation rather than a safe regression test.
 
 ## Global Constraints
 
