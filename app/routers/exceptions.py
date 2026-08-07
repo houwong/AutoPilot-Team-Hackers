@@ -45,6 +45,7 @@ from ..models.command_center import (
 )
 from ..services import supabase
 from ..services.auto_client import AutoClient, AutoError
+from ..services.operator_steps import load_canonical_step_map
 from .agent import ORCHESTRATOR_ID, _backfill_parked_steps, _consume, _finalise, resolve_inputs
 
 log = logging.getLogger(__name__)
@@ -256,14 +257,7 @@ async def resolve_exception(
     # notification is recorded. Without this pass the Workbench says the
     # decision was saved but the queue remains awaiting_human forever.
     if form_result is not None and form_client is not None and parent_run is not None:
-        by_step = {
-            step.step_id: step
-            for step in db.query(OperatorExecution)
-            .filter(OperatorExecution.agent_run_id == parent_run.id)
-            .order_by(OperatorExecution.sequence)
-            .all()
-            if step.step_id
-        }
+        by_step = load_canonical_step_map(db, parent_run)
         await _backfill_parked_steps(
             form_client,
             db,

@@ -130,6 +130,38 @@ def test_classify_run_distinguishes_human_rejection_from_gate_block(db):
     assert queue_service.classify_run(db, run, exception) == QueueItemState.HUMAN_REJECTED.value
 
 
+def test_classify_run_prefers_terminal_duplicate_activity(db):
+    """A stale running duplicate must not hide a completed notification."""
+    run = AgentRun(run_id="run-duplicate-notification", status=RunStatus.SUCCEEDED.value)
+    db.add(run)
+    db.flush()
+    db.add_all(
+        [
+            OperatorExecution(
+                agent_run_id=run.id,
+                step_id="step_6_notif_rejected",
+                status="completed",
+                output={"delivered": True},
+            ),
+            OperatorExecution(
+                agent_run_id=run.id,
+                step_id="step_6_notif_rejected",
+                status="running",
+            ),
+        ]
+    )
+    exception = ExceptionItem(
+        agent_run_id=run.id,
+        primary_issue_key="ITSM-REVIEW",
+        status=ExceptionStatus.RESOLVED.value,
+        resolution="rejected",
+    )
+    db.add(exception)
+    db.commit()
+
+    assert queue_service.classify_run(db, run, exception) == QueueItemState.HUMAN_REJECTED.value
+
+
 def test_campaign_counts_do_not_call_cancelled_preview_processed(db):
     campaign = QueueCampaign(
         name="preview",

@@ -39,6 +39,7 @@ from ..models.command_center import (
     Severity,
 )
 from ..services import supabase
+from ..services.operator_steps import canonical_step_map
 from ..services.auto_client import (
     EV_ACTIVITY,
     EV_ERROR,
@@ -724,6 +725,26 @@ async def _backfill_parked_steps(
     """
     if not run.auto_run_id:
         return
+
+    # Initial parking and post-decision reconciliation can overlap: the first
+    # backfill is still polling when a reviewer submits the form. Serialize
+    # those passes on the run row so both cannot insert the same notification
+    # activity at once. We keep the transaction open until the poll finishes;
+    # the Workbench already has the parked item committed before this starts.
+    run = (
+        db.query(AgentRun)
+        .filter(AgentRun.id == run.id)
+        .with_for_update()
+        .one()
+    )
+    existing = (
+        db.query(OperatorExecution)
+        .filter(OperatorExecution.agent_run_id == run.id)
+        .order_by(OperatorExecution.sequence, OperatorExecution.id)
+        .all()
+    )
+    by_step.clear()
+    by_step.update(canonical_step_map(existing))
     seq = max((r.sequence or 0) for r in by_step.values()) if by_step else 0
     added: set[str] = set()
     for _ in range(4):
@@ -732,6 +753,7 @@ async def _backfill_parked_steps(
             detail = await client.get_run(run.auto_run_id)
         except AutoError as exc:  # a missed notification must not fail the run
             log.warning("backfill failed for run %s: %s", run.run_id, exc)
+            db.rollback()
             return
         for activity in detail.get("activityRuns") or []:
             step_id = activity.get("stepId")
@@ -753,14 +775,16 @@ async def _backfill_parked_steps(
                 by_step[step_id] = row
                 added.add(step_id)
             elif step_id not in added and not (
-                reconcile_waiting_step and step_id == HUMAN_STEP_ID
+                reconcile_waiting_step
+                and step_id in {HUMAN_STEP_ID, *NOTIFICATION_STEPS}
             ):
                 # Streamed rows are authoritative; never overwrite them. This
                 # also leaves step_4_rev showing that it is still waiting.
                 continue
-            elif step_id == HUMAN_STEP_ID and reconcile_waiting_step:
+            elif reconcile_waiting_step and step_id in {HUMAN_STEP_ID, *NOTIFICATION_STEPS}:
                 # The activity is the same human form that was streamed before
-                # parking. Auto now has the authoritative post-decision status.
+                # parking (or its terminal notification). Auto now has the
+                # authoritative post-decision status.
                 added.add(step_id)
             # Keep polling our own rows: the first read usually catches the
             # notification mid-flight, and a row frozen at 'running' reads as a
@@ -779,7 +803,7 @@ async def _backfill_parked_steps(
                     ).total_seconds() * 1000
                 if step_id in NOTIFICATION_STEPS:
                     await _persist_notification_result(client, by_step, step_id)
-        db.commit()
+        db.flush()
         if all(
             (by_step[s].status in _DONE or by_step[s].status in _FAILED) for s in added
         ) and added:
@@ -787,6 +811,7 @@ async def _backfill_parked_steps(
     for step_id in added:
         log.info("run %s backfilled %s (%s)", run.run_id, step_id,
                  by_step[step_id].status)
+    db.commit()
 
 
 async def _park_for_human(

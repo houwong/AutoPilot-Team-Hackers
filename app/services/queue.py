@@ -26,6 +26,7 @@ from ..models.command_center import (
     RunStatus,
 )
 from . import supabase
+from .operator_steps import DONE_STEP_STATUSES, canonical_step_map
 
 log = logging.getLogger(__name__)
 
@@ -45,8 +46,6 @@ NON_RETRYABLE_STATES = {
     QueueItemState.SKIPPED_CLOSED.value,
     QueueItemState.COMPLETED_UNKNOWN.value,
 }
-
-DONE_STEP_STATUSES = {"completed", "succeeded", "success", "ok"}
 
 PRIORITY_ORDER = {
     "highest": 0,
@@ -241,7 +240,7 @@ def classify_run(db: Session, run: AgentRun, exception: ExceptionItem | None = N
         return QueueItemState.FAILED.value
 
     steps = _operator_steps(db, run)
-    by_step = {step.step_id: step for step in steps if step.step_id}
+    by_step = canonical_step_map(steps)
     if (
         exception
         and exception.status == ExceptionStatus.RESOLVED.value
@@ -307,10 +306,12 @@ def synchronize_campaign(db: Session, campaign: QueueCampaign) -> None:
                     if exception.resolution in {"approved", "modified"}
                     else "step_6_notif_rejected"
                 )
-                manual_step = db.query(OperatorExecution).filter(
-                    OperatorExecution.agent_run_id == run.id,
-                    OperatorExecution.step_id == terminal_notification,
-                ).first()
+                manual_step = canonical_step_map(
+                    db.query(OperatorExecution).filter(
+                        OperatorExecution.agent_run_id == run.id,
+                        OperatorExecution.step_id == terminal_notification,
+                    ).all()
+                ).get(terminal_notification)
                 if not manual_step or manual_step.status not in DONE_STEP_STATUSES:
                     item.state = QueueItemState.AWAITING_HUMAN.value
                     continue
