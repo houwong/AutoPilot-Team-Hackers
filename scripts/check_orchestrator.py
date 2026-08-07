@@ -286,6 +286,39 @@ def main() -> int:
     except Exception as exc:  # noqa: BLE001
         check(False, "the default version is the one checked", f"could not read versions: {exc}")
 
+    # 11. Same guarantee for every operator the orchestrator delegates to.
+    #
+    #     `isDraft: True` does NOT hold an edit back — each save commits a version
+    #     and makes it default, and the draft flag only means an editing session
+    #     is open beside it. Proven on Operator 3: it wrote to a live ticket
+    #     before approval at v2, stopped at v3, and stayed stopped at v4, with
+    #     isDraft true throughout. The behaviour tracked the version, not the
+    #     flag.
+    #
+    #     What WOULD bite is isDefault pointing at an older version than the one
+    #     being edited: the definition you read would not be the code that runs,
+    #     and every check above would pass while vouching for the wrong thing.
+    #     That is the condition worth asserting — for the operators too, not just
+    #     the orchestrator, since the safety guard that stops the agent writing
+    #     before a human approves lives inside Operator 3.
+    for step in wf["steps"]:
+        wid = (step.get("subworkflow_call") or {}).get("workflow_id")
+        if not wid:
+            continue
+        try:
+            op = fetch(f"/workflows/{wid}")
+            op_versions = fetch(f"/workflows/{wid}/versions").get("versions") or []
+            op_default = next(
+                (v["versionNumber"] for v in op_versions if v.get("isDefault")), None
+            )
+            check(
+                str(op_default) == str(op.get("version")),
+                f"{step['id']} runs the latest version of {op.get('name', wid)[:34]}",
+                f"latest is v{op.get('version')} but Auto runs v{op_default}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            check(False, f"{step['id']} operator version readable", str(exc)[:120])
+
     width = max(len(n) for _, n, _ in results)
     failed = 0
     for ok, name, detail in results:
