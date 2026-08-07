@@ -270,7 +270,7 @@ export default function PoliciesPage() {
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !triggering) runAgent()
             }}
-            placeholder='Ticket key (blank = top of queue)'
+            placeholder='e.g. ITSM-2180'
             aria-label='Target ticket key'
             className='h-9 w-56 rounded-md border border-input bg-background px-3 font-mono text-sm'
           />
