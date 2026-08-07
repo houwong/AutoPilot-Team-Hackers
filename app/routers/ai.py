@@ -24,11 +24,14 @@ the rest, listing what it does know instead of guessing.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
+import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import String, func
 from sqlalchemy.orm import Session
@@ -284,6 +287,75 @@ def _capabilities(_msg: str, _db: Session) -> tuple[str, list[ToolCall]]:
     )
 
 
+async def _trigger_run(msg: str, db: Session) -> Optional[tuple[str, list[ToolCall]]]:
+    """
+    Start a run from the chat.
+
+    The guide requires this of the AI Manager: answer from real records *and*
+    trigger or re-trigger an Operator from the same place. Answering alone is
+    half the surface.
+
+    Deliberately narrow. It starts the orchestrator, optionally on a named
+    ticket, and reports what it did. It does not approve anything, resolve a
+    Workbench item, or edit a policy — those are decisions with consequences,
+    and they belong on the surfaces built to show their context, not behind a
+    sentence typed into a chat box.
+
+    The same guard the dashboard uses applies: a closed ticket is refused and
+    the refusal is explained, because the agent must not reopen finished work.
+    """
+    if not re.search(r"\b(run|trigger|re-?run|start|execute)\b", msg, re.I):
+        return None
+    # "why did ITSM-2180 escalate" also contains a ticket key, so require an
+    # imperative reading rather than a question.
+    if re.search(r"^\s*(why|what|how|when|who|is|are|does|did|can)\b", msg.strip(), re.I):
+        return None
+
+    m = ISSUE_KEY_RE.search(msg)
+    key = m.group(1).upper() if m else None
+
+    from .agent import ORCHESTRATOR_ID, _consume, _refuse_closed_ticket, resolve_inputs
+
+    if key:
+        try:
+            await _refuse_closed_ticket(key)
+        except HTTPException as exc:
+            return (
+                f"I did not start a run. {exc.detail}",
+                [_tool("trigger_run", {"issue_key": key},
+                       {"started": False, "reason": exc.detail})],
+            )
+
+    inputs = resolve_inputs(db, {"target_issue_key": key} if key else {})
+    run = AgentRun(
+        run_id=str(uuid.uuid4()),
+        workflow_id=ORCHESTRATOR_ID,
+        trigger="ai_manager",
+        status=RunStatus.PENDING.value,
+        issue_keys=[key] if key else None,
+        inputs=inputs,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    asyncio.create_task(_consume(run.id, ORCHESTRATOR_ID, inputs))
+
+    target = f"**{key}**" if key else "the top of the queue"
+    return (
+        f"Started a run on {target} — run `{run.run_id[:8]}`.\n\n"
+        f"It takes about two minutes. The orchestrator will fan out to Operators 5 "
+        f"and 6, triage, diagnose, then decide at the change gate whether to "
+        f"remediate, escalate to a human, or block. Ask me about {key or 'the ticket'} "
+        f"once it finishes, or watch it on the dashboard.\n\n"
+        f"It ran with the policy values currently active — including a confidence "
+        f"threshold of "
+        f"{next((p.value for p in db.query(Policy).filter(Policy.key == 'kb_confidence_threshold').all()), 'unset')}."
+        , [_tool("trigger_run", {"issue_key": key, "workflow": "orchestrator"},
+                 {"started": True, "run_id": run.run_id})],
+    )
+
+
 def _asking_what_i_do(msg: str, db: Session) -> Optional[tuple[str, list[ToolCall]]]:
     """
     Answer "what can you do" directly.
@@ -298,12 +370,16 @@ def _asking_what_i_do(msg: str, db: Session) -> Optional[tuple[str, list[ToolCal
     return _capabilities(msg, db)
 
 
-ROUTES = (_explain_ticket, _asking_what_i_do, _workbench, _performance,
-          _policies, _integrations)
+# _trigger_run comes first: "run ITSM-2180" also contains a ticket key, and
+# _explain_ticket would otherwise answer it with history instead of starting the
+# run the user asked for. _trigger_run itself declines anything phrased as a
+# question, so "why did ITSM-2180 escalate" still falls through to the explainer.
+ROUTES = (_trigger_run, _explain_ticket, _asking_what_i_do, _workbench,
+          _performance, _policies, _integrations)
 
 
 @router.post("/chat", response_model=ChatResponse)
-def chat(body: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
+async def chat(body: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
     """
     Answer a question about the agent from the agent's own records.
 
@@ -320,6 +396,8 @@ def chat(body: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse:
     for route in ROUTES:
         try:
             hit = route(msg, db)
+            if asyncio.iscoroutine(hit):
+                hit = await hit
         except Exception:  # noqa: BLE001 — one broken answerer must not kill the panel
             log.exception("AI Manager answerer %s failed", getattr(route, "__name__", route))
             continue
