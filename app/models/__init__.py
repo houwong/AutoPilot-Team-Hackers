@@ -2,6 +2,10 @@
 from .audit import AuditCategory, AuditLog, AuditSeverity
 from .command_center import (
     AgentRun,
+    QueueCampaign,
+    QueueCampaignStatus,
+    QueueItem,
+    QueueItemState,
     Decision,
     ExceptionItem,
     ExceptionStatus,
@@ -30,6 +34,10 @@ __all__ = [
     "AuditSeverity",
     # Command Center (Round 2)
     "AgentRun",
+    "QueueCampaign",
+    "QueueCampaignStatus",
+    "QueueItem",
+    "QueueItemState",
     "OperatorExecution",
     "Policy",
     "PolicyEvaluation",

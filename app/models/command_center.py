@@ -53,6 +53,29 @@ class RunStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class QueueCampaignStatus(str, Enum):
+    PREVIEW = "preview"
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+
+
+class QueueItemState(str, Enum):
+    PREVIEW = "preview"
+    PENDING = "pending"
+    RUNNING = "running"
+    AWAITING_HUMAN = "awaiting_human"
+    AUTO_REMEDIATED = "auto_remediated"
+    HUMAN_APPROVED = "human_approved"
+    BLOCKED = "blocked"
+    HUMAN_REJECTED = "human_rejected"
+    FAILED = "failed"
+    SKIPPED_CLOSED = "skipped_closed"
+    CANCELLED = "cancelled"
+    COMPLETED_UNKNOWN = "completed_unknown"
+
+
 class RunPhase(str, Enum):
     """The two-run split: analysis pauses for a human, execution resumes after."""
 
@@ -122,6 +145,7 @@ class AgentRun(Base):
     run_id = Column(String(64), unique=True, index=True, nullable=False)
     auto_run_id = Column(String(128), index=True)  # Auto's own id, when it returns one
     workflow_id = Column(String(64), index=True)
+    selected_issue_key = Column(String(64), index=True)
 
     trigger = Column(String(64))  # ticket.created | manual | schedule | workbench
     phase = Column(String(4), default=RunPhase.ANALYSIS.value)
@@ -143,6 +167,51 @@ class AgentRun(Base):
     operators = relationship(
         "OperatorExecution", back_populates="run", cascade="all, delete-orphan"
     )
+
+
+class QueueCampaign(Base):
+    """A confirmed, bounded batch of tickets processed by the Command Center."""
+
+    __tablename__ = "queue_campaigns"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(255), nullable=False)
+    source = Column(String(32), nullable=False, default="manual")
+    status = Column(String(32), nullable=False, default=QueueCampaignStatus.PREVIEW.value, index=True)
+    batch_limit = Column(Integer, nullable=False, default=10)
+    created_by = Column(String(255))
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    confirmed_at = Column(DateTime(timezone=True))
+    started_at = Column(DateTime(timezone=True))
+    completed_at = Column(DateTime(timezone=True))
+    last_tick_at = Column(DateTime(timezone=True))
+
+    items = relationship("QueueItem", back_populates="campaign", cascade="all, delete-orphan")
+
+
+class QueueItem(Base):
+    """One ticket snapshot and its immutable processing/audit state."""
+
+    __tablename__ = "queue_items"
+
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("queue_campaigns.id"), nullable=False, index=True)
+    issue_key = Column(String(64), nullable=False, index=True)
+    source_status = Column(String(64))
+    source_priority = Column(String(32))
+    source_updated_at = Column(String(64))
+    state = Column(String(32), nullable=False, default=QueueItemState.PREVIEW.value, index=True)
+    outcome = Column(String(64), index=True)
+    latest_run_id = Column(String(64), index=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    last_error = Column(Text)
+    requeued_from_id = Column(Integer, ForeignKey("queue_items.id"), index=True)
+    requeue_reason = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+    started_at = Column(DateTime(timezone=True))
+    completed_at = Column(DateTime(timezone=True))
+
+    campaign = relationship("QueueCampaign", back_populates="items")
 
 
 class OperatorExecution(Base):

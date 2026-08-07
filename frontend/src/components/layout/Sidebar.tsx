@@ -63,6 +63,7 @@ const navItems: NavSection[] = [
     items: [
       { href: '/', label: 'Dashboard', icon: Icons.dashboard },
       { href: '/workbench', label: 'Workbench', icon: Icons.workbench },
+      { href: '/processed', label: 'Processed Tickets', icon: Icons.table },
     ],
   },
   {
@@ -343,4 +344,3 @@ export function Sidebar() {
     </TooltipProvider>
   )
 }
-

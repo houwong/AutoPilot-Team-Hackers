@@ -38,13 +38,14 @@ from ..models.command_center import (
     AgentRun,
     ExceptionItem,
     ExceptionStatus,
+    OperatorExecution,
     Resolution,
     RunPhase,
     RunStatus,
 )
 from ..services import supabase
 from ..services.auto_client import AutoClient, AutoError
-from .agent import ORCHESTRATOR_ID, _consume, resolve_inputs
+from .agent import ORCHESTRATOR_ID, _backfill_parked_steps, _consume, _finalise, resolve_inputs
 
 log = logging.getLogger(__name__)
 
@@ -215,16 +216,17 @@ async def resolve_exception(
     # Failure here is reported, not swallowed: if the form cannot be submitted
     # the reviewer must know their decision did not reach the agent.
     form_result: dict[str, Any] | None = None
+    form_client: AutoClient | None = None
     parent_run = db.query(AgentRun).get(item.agent_run_id) if item.agent_run_id else None
     if parent_run and parent_run.auto_run_id:
         client = AutoClient()
+        form_client = client
         try:
             activity_id = await client.find_waiting_form(parent_run.auto_run_id)
             if activity_id:
                 form_result = await client.submit_human_form(
                     activity_id, approved=approved, notes=body.notes or ""
                 )
-                parent_run.status = RunStatus.SUCCEEDED.value
                 log.info(
                     "submitted Auto review form for run %s (%s)",
                     parent_run.run_id,
@@ -247,6 +249,46 @@ async def resolve_exception(
     item.resolved_by = body.resolved_by
     item.resolved_at = datetime.now(timezone.utc)
     db.commit()
+
+    # The stream was deliberately detached while the form was waiting. Once a
+    # decision is submitted, reconcile that same Auto run so the parked
+    # step_4_rev changes from ``running`` to ``completed`` and the terminal
+    # notification is recorded. Without this pass the Workbench says the
+    # decision was saved but the queue remains awaiting_human forever.
+    if form_result is not None and form_client is not None and parent_run is not None:
+        by_step = {
+            step.step_id: step
+            for step in db.query(OperatorExecution)
+            .filter(OperatorExecution.agent_run_id == parent_run.id)
+            .order_by(OperatorExecution.sequence)
+            .all()
+            if step.step_id
+        }
+        await _backfill_parked_steps(
+            form_client,
+            db,
+            parent_run,
+            by_step,
+            reconcile_waiting_step=True,
+        )
+        done = {"completed", "succeeded", "success", "ok"}
+        failed = {"failed", "error", "cancelled"}
+        terminal_ids = {
+            "step_6_notif_auto",
+            "step_6_notif_escalated",
+            "step_6_notif_rejected",
+            "step_6_notif_manual",
+        }
+        terminal_steps = [
+            step for step in by_step.values() if step.step_id in terminal_ids
+        ]
+        if any(step.status in done for step in terminal_steps):
+            parent_run.status = RunStatus.SUCCEEDED.value
+            _finalise(parent_run)
+        elif any(step.status in failed for step in terminal_steps):
+            parent_run.status = RunStatus.FAILED.value
+            _finalise(parent_run)
+        db.commit()
 
     # 4. Only start a NEW run when there was no parked run to continue.
     #
@@ -326,6 +368,7 @@ async def resolve_exception(
         run = AgentRun(
             run_id=str(uuid.uuid4()),
             workflow_id=ORCHESTRATOR_ID,
+            selected_issue_key=item.primary_issue_key,
             trigger="workbench",
             phase=RunPhase.EXECUTION.value,
             status=RunStatus.PENDING.value,

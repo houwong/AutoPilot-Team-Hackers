@@ -63,6 +63,11 @@ ORCHESTRATOR_ID = os.getenv("AUTO_WF_ORCHESTRATOR", "019fd826-9991-7000-873c-ea6
 # Statuses Auto reports for a finished step.
 _DONE = {"completed", "succeeded", "success", "ok"}
 _FAILED = {"failed", "error", "cancelled"}
+_ACTIVE_RUN_STATUSES = {
+    RunStatus.PENDING.value,
+    RunStatus.RUNNING.value,
+    RunStatus.AWAITING_HUMAN.value,
+}
 
 # The orchestrator step that opens Auto's human form. When it starts, the run is
 # waiting on a person: we detach, park the run, and take the decision into our
@@ -96,6 +101,7 @@ class RunSummary(BaseModel):
     phase: Optional[str]
     status: Optional[str]
     issue_keys: Optional[list]
+    selected_issue_key: Optional[str]
     error: Optional[str]
     duration_ms: Optional[float]
     started_at: Optional[datetime]
@@ -244,6 +250,7 @@ async def _consume(run_pk: int, workflow_id: str, inputs: dict[str, Any]) -> Non
                     if row.step_id in names:
                         row.operator_name = names[row.step_id]
                 run.result = ev.data if isinstance(ev.data, dict) else {"raw": ev.raw}
+                _backfill_selected_issue_key(run, ev.data)
                 run.status = RunStatus.SUCCEEDED.value
                 # Finalise here as well as after the loop. The stream does not
                 # always terminate cleanly once `result` has arrived, and a run
@@ -259,6 +266,7 @@ async def _consume(run_pk: int, workflow_id: str, inputs: dict[str, Any]) -> Non
 
         if run.status == RunStatus.RUNNING.value:
             run.status = RunStatus.SUCCEEDED.value
+        _backfill_selected_issue_key(run, run.result)
         _finalise(run)
         db.commit()
         log.info("agent run %s finished: %s (%d steps)", run.run_id, run.status, seq)
@@ -353,19 +361,74 @@ async def trigger_run(
     orchestrator takes minutes once Operators 5 and 6 scan the backlog, so this
     must not block the request.
     """
+    run = await create_agent_run(db, background, body)
+
+    return RunSummary(**_summarise(run, 0))
+
+
+async def create_agent_run(
+    db: Session, background: BackgroundTasks, body: TriggerRequest
+) -> AgentRun:
+    """Create one explicit or legacy run for both the UI and queue worker."""
     workflow_id = body.workflow_id or ORCHESTRATOR_ID
     inputs = resolve_inputs(db, body.inputs)
-    if body.target_issue_key:
-        await _refuse_closed_ticket(body.target_issue_key)
-        inputs["target_issue_key"] = body.target_issue_key
+    target = (body.target_issue_key or "").strip() or None
+    if target:
+        await _refuse_closed_ticket(target)
+        inputs["target_issue_key"] = target
+
+        # A direct/manual trigger must not start a second run for a ticket that
+        # is already being processed. Queue ticks have their own row lock, but
+        # the dashboard and AI Manager call this endpoint directly; without a
+        # guard, two clicks (or a retried request) can remediate/notify twice.
+        # Workbench follow-ups are intentional continuations of the parked run
+        # and are therefore exempt from this check.
+        if body.trigger != "workbench" and not body.parent_run_id:
+            active = (
+                db.query(AgentRun)
+                .filter(
+                    AgentRun.selected_issue_key == target,
+                    AgentRun.status.in_(_ACTIVE_RUN_STATUSES),
+                )
+                .order_by(AgentRun.id.desc())
+                .first()
+            )
+            if active:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"{target} already has an active agent run "
+                        f"({active.run_id}, status={active.status})"
+                    ),
+                )
+            open_exception = (
+                db.query(ExceptionItem)
+                .filter(
+                    ExceptionItem.primary_issue_key == target,
+                    ExceptionItem.status.in_(
+                        [ExceptionStatus.OPEN.value, ExceptionStatus.IN_REVIEW.value]
+                    ),
+                )
+                .order_by(ExceptionItem.id.desc())
+                .first()
+            )
+            if open_exception:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"{target} has an unresolved Workbench exception "
+                        f"({open_exception.id}); resolve or requeue it before starting another run"
+                    ),
+                )
 
     run = AgentRun(
         run_id=str(uuid.uuid4()),
         workflow_id=workflow_id,
+        selected_issue_key=target,
         trigger=body.trigger,
         phase=body.phase,
         status=RunStatus.PENDING.value,
-        issue_keys=[body.target_issue_key] if body.target_issue_key else None,
+        issue_keys=[target] if target else None,
         inputs=inputs,
         parent_run_id=body.parent_run_id,
         started_at=datetime.now(timezone.utc),
@@ -375,8 +438,7 @@ async def trigger_run(
     db.refresh(run)
 
     background.add_task(asyncio.run, _consume(run.id, workflow_id, inputs))
-
-    return RunSummary(**_summarise(run, 0))
+    return run
 
 
 @router.get("/runs", response_model=list[RunSummary])
@@ -492,6 +554,31 @@ def _finalise(run: AgentRun) -> None:
         run.duration_ms = (ended - started).total_seconds() * 1000
 
 
+def _backfill_selected_issue_key(run: AgentRun, payload: Any) -> None:
+    """Recover the actual ticket for legacy blank-target runs."""
+    if run.selected_issue_key:
+        return
+    candidates: list[Any] = []
+    if isinstance(payload, dict):
+        candidates.extend(
+            payload.get(key)
+            for key in ("issue_key", "Issue key", "target_issue_key")
+        )
+        for nested_key in ("output", "result", "ticket_data", "ticket"):
+            nested = payload.get(nested_key)
+            if isinstance(nested, dict):
+                candidates.extend(
+                    nested.get(key)
+                    for key in ("issue_key", "Issue key", "target_issue_key")
+                )
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if value:
+            run.selected_issue_key = value
+            run.issue_keys = [value]
+            return
+
+
 async def _step_result(
     client: AutoClient, by_step: dict[str, OperatorExecution], step_id: str
 ) -> dict:
@@ -604,7 +691,12 @@ def reclaim_orphaned_runs() -> int:
 
 
 async def _backfill_parked_steps(
-    client: AutoClient, db: Session, run: AgentRun, by_step: dict[str, OperatorExecution]
+    client: AutoClient,
+    db: Session,
+    run: AgentRun,
+    by_step: dict[str, OperatorExecution],
+    *,
+    reconcile_waiting_step: bool = False,
 ) -> None:
     """
     Record the steps that finish after we detach from the stream.
@@ -621,6 +713,14 @@ async def _backfill_parked_steps(
     step_4_rev started waiting. This holds the session for under a minute, not
     for the reviewer's thinking time, which is what detaching was protecting
     against.
+
+    ``reconcile_waiting_step`` is used after the Command Center submits the
+    human form. During the initial park the streamed ``step_4_rev`` row is
+    intentionally left as ``running`` so the Workbench visibly shows a paused
+    decision. Once the form is submitted, Auto changes that same activity to
+    ``completed``; without this explicit reconciliation the Command Center
+    would keep the old status forever and a queue item could never leave
+    ``awaiting_human``.
     """
     if not run.auto_run_id:
         return
@@ -652,10 +752,16 @@ async def _backfill_parked_steps(
                 db.add(row)
                 by_step[step_id] = row
                 added.add(step_id)
-            elif step_id not in added:
+            elif step_id not in added and not (
+                reconcile_waiting_step and step_id == HUMAN_STEP_ID
+            ):
                 # Streamed rows are authoritative; never overwrite them. This
                 # also leaves step_4_rev showing that it is still waiting.
                 continue
+            elif step_id == HUMAN_STEP_ID and reconcile_waiting_step:
+                # The activity is the same human form that was streamed before
+                # parking. Auto now has the authoritative post-decision status.
+                added.add(step_id)
             # Keep polling our own rows: the first read usually catches the
             # notification mid-flight, and a row frozen at 'running' reads as a
             # hung step rather than a delivered message.
@@ -664,6 +770,13 @@ async def _backfill_parked_steps(
                 row.output = outputs
             if row.status in _DONE or row.status in _FAILED:
                 row.ended_at = datetime.now(timezone.utc)
+                if row.started_at:
+                    started = row.started_at
+                    if started.tzinfo is None:
+                        started = started.replace(tzinfo=timezone.utc)
+                    row.duration_ms = (
+                        row.ended_at.replace(tzinfo=timezone.utc) - started
+                    ).total_seconds() * 1000
                 if step_id in NOTIFICATION_STEPS:
                     await _persist_notification_result(client, by_step, step_id)
         db.commit()
@@ -696,6 +809,9 @@ async def _park_for_human(
         or remediation.get("issue_key")
         or (run.issue_keys or [None])[0]
     )
+    if issue_key and not run.selected_issue_key:
+        run.selected_issue_key = issue_key
+        run.issue_keys = [issue_key]
 
     # Which route reached the human decides the exception type and wording.
     decision = (gate.get("decision") or "").lower()
@@ -816,6 +932,7 @@ def _summarise(run: AgentRun, operator_count: int) -> dict:
         "phase": run.phase,
         "status": run.status,
         "issue_keys": run.issue_keys,
+        "selected_issue_key": run.selected_issue_key,
         "error": run.error,
         "duration_ms": run.duration_ms,
         "started_at": run.started_at,

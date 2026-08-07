@@ -50,6 +50,7 @@ from .routers import (
     insights_router,
     integrations_router,
     policies_router,
+    queue_router,
     items_router,
 )
 from .security import get_current_user, verify_access
@@ -197,6 +198,9 @@ api_router.include_router(insights_router)
 
 # Data Manager — live registry of connected systems
 api_router.include_router(integrations_router)
+
+# Ticket queue and processed history
+api_router.include_router(queue_router)
 
 # Authorization pattern examples
 api_router.include_router(examples_router)

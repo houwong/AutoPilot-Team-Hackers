@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import re
+import secrets
 from functools import lru_cache
 
 import requests
@@ -162,6 +163,15 @@ def verify_access(
     endpoint perform the check manually.
     """
     request_path = request.url.path
+
+    # Windows Task Scheduler cannot carry a browser session. The queue tick is
+    # still protected by a dedicated secret and is accepted only for this
+    # single endpoint.
+    scheduler_token = os.getenv("QUEUE_TICK_TOKEN")
+    if request_path.endswith("/api/queue/tick") and scheduler_token:
+        supplied = request.headers.get("X-Queue-Token", "")
+        if secrets.compare_digest(supplied, scheduler_token):
+            return
 
     # --- Dev-mode auth bypass ---
     if AUTH_BYPASS:
