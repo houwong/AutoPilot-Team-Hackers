@@ -75,15 +75,6 @@ function VerificationBadge({ item }: { item: QueueItem }) {
   )
 }
 
-function Counter({ label, value }: { label: string; value: number }) {
-  return (
-    <div className='rounded-lg border bg-background/60 p-3'>
-      <p className='text-[10px] font-semibold uppercase tracking-wider text-muted-foreground'>{label}</p>
-      <p className='mt-1 text-2xl font-semibold tabular-nums'>{value}</p>
-    </div>
-  )
-}
-
 export default function ProcessedTicketsPage() {
   const [campaign, setCampaign] = useState<QueueCampaign | null>(null)
   const [preview, setPreview] = useState<{ campaign: QueueCampaign; items: QueueItem[] } | null>(null)
@@ -138,58 +129,103 @@ export default function ProcessedTicketsPage() {
   }
 
   const counts = campaign?.counts ?? {}
+  const total = counts.total ?? 0
+  const done = counts.processed ?? 0
+  const running = counts.running ?? 0
+  const waitingOnPeople = counts.awaiting_human ?? 0
+  const queued = counts.pending ?? 0
+  const needsAttention =
+    waitingOnPeople + (counts.blocked ?? 0) + (counts.failed ?? 0) + (counts.completed_unknown ?? 0)
 
   return (
-    <div className='space-y-6'>
+    <div className='space-y-10'>
       <div className='flex flex-wrap items-end justify-between gap-4'>
         <div>
-          <p className='text-micro uppercase tracking-widest text-brand-muted'>Command Center</p>
           <h1 className='text-display-3 font-bold tracking-tight text-brand-navy'>Processed Tickets</h1>
-          <p className='mt-2 max-w-2xl text-muted-foreground'>
-            Preview a safe batch, process one ticket at a time, and keep a permanent outcome history.
+          <p className='mt-2 max-w-xl text-muted-foreground'>
+            One ticket at a time. Nothing runs until you confirm the batch.
           </p>
         </div>
         <Link href='/'><Button variant='outline'>Back to Dashboard</Button></Link>
       </div>
 
-      {error && <Card className='border-red-500/30 bg-red-500/5'><CardContent className='p-4 text-sm text-red-600'>{error}</CardContent></Card>}
+      {error && (
+        <div className='rounded-lg border border-red-500/30 bg-red-500/5 p-4 text-sm text-red-700'>{error}</div>
+      )}
 
-      <Card>
-        <CardHeader className='flex flex-row items-center justify-between space-y-0'>
-          <div>
-            <CardTitle className='text-base'>Queue control</CardTitle>
-            <p className='mt-1 text-xs text-muted-foreground'>The scheduler checks every five minutes and starts at most one run.</p>
-          </div>
-          <span className={`rounded-full px-3 py-1 text-xs font-semibold ${campaign ? stateClass(campaign.status) : 'bg-slate-500/10 text-slate-700'}`}>
-            {campaign ? humanise(campaign.status) : 'No active campaign'}
-          </span>
-        </CardHeader>
-        <CardContent className='space-y-4'>
-          <div className='grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-8'>
-            <Counter label='Total' value={counts.total ?? 0} />
-            <Counter label='Pending' value={counts.pending ?? 0} />
-            <Counter label='Running' value={counts.running ?? 0} />
-            <Counter label='Human' value={counts.awaiting_human ?? 0} />
-            <Counter label='Auto' value={counts.auto_remediated ?? 0} />
-            <Counter label='Approved' value={counts.human_approved ?? 0} />
-            <Counter label='Blocked' value={counts.blocked ?? 0} />
-            <Counter label='Failed' value={(counts.failed ?? 0) + (counts.completed_unknown ?? 0)} />
+      {/* The batch, as one reading.
+          This replaced eight equal-weight counters. Total and Failed had the
+          same visual weight, so the page answered "here are some numbers"
+          rather than the two questions an operator actually arrives with: is it
+          moving, and does anything need me. The bar carries composition; only
+          non-zero exceptions get called out. */}
+      <section className='border-t pt-6'>
+        <div className='flex flex-wrap items-baseline justify-between gap-4'>
+          <div className='flex items-baseline gap-3'>
+            <span className='text-sm font-semibold uppercase tracking-wide text-brand-navy'>
+              {campaign ? humanise(campaign.status) : 'No batch running'}
+            </span>
+            {total > 0 && (
+              <span className='text-sm text-muted-foreground'>batch of {total}</span>
+            )}
           </div>
           <div className='flex flex-wrap gap-2'>
-            {!preview && <Button onClick={makePreview} disabled={busy}><Icons.listFilter className='mr-2 h-4 w-4' />Preview next 10</Button>}
+            {!preview && !campaign && (
+              <Button onClick={makePreview} disabled={busy}>
+                <Icons.listFilter className='mr-2 h-4 w-4' />Preview next 10
+              </Button>
+            )}
             {preview && (
               <Button onClick={() => action(() => queue.confirm(preview.campaign.id))} disabled={busy}>
                 <Icons.arrowRight className='mr-2 h-4 w-4' />Confirm and start
               </Button>
             )}
+            {campaign?.status === 'running' && <Button onClick={() => action(() => queue.tick())} disabled={busy}>Process next now</Button>}
             {campaign?.status === 'running' && <Button variant='outline' onClick={() => action(() => queue.pause(campaign.id))} disabled={busy}>Pause</Button>}
-            {campaign?.status === 'paused' && <Button variant='outline' onClick={() => action(() => queue.resume(campaign.id))} disabled={busy}>Resume</Button>}
-            {campaign?.status === 'running' && <Button variant='outline' onClick={() => action(() => queue.tick())} disabled={busy}>Process next now</Button>}
+            {campaign?.status === 'paused' && <Button onClick={() => action(() => queue.resume(campaign.id))} disabled={busy}>Resume</Button>}
             {(campaign?.status === 'running' || campaign?.status === 'paused') && <Button variant='ghost' onClick={() => action(() => queue.cancel(campaign.id))} disabled={busy}>Cancel pending</Button>}
           </div>
-          {campaign?.last_tick_at && <p className='text-xs text-muted-foreground'>Last scheduler tick {relativeTime(campaign.last_tick_at)}. A running ticket is never started twice.</p>}
-        </CardContent>
-      </Card>
+        </div>
+
+        {total > 0 ? (
+          <>
+            <div className='mt-4 flex h-2 w-full overflow-hidden rounded-full bg-muted'>
+              {done > 0 && <div className='bg-emerald-500' style={{ width: `${(done / total) * 100}%` }} />}
+              {running > 0 && <div className='bg-brand-cornflower' style={{ width: `${(running / total) * 100}%` }} />}
+              {waitingOnPeople > 0 && <div className='bg-amber-500' style={{ width: `${(waitingOnPeople / total) * 100}%` }} />}
+            </div>
+            <p className='mt-2 text-sm text-muted-foreground'>
+              <span className='font-semibold text-brand-navy tabular-nums'>{done}</span> done
+              {running > 0 && <> · <span className='tabular-nums'>{running}</span> running</>}
+              {waitingOnPeople > 0 && <> · <span className='tabular-nums'>{waitingOnPeople}</span> waiting on a person</>}
+              {queued > 0 && <> · <span className='tabular-nums'>{queued}</span> queued</>}
+            </p>
+          </>
+        ) : (
+          <p className='mt-3 max-w-xl text-sm text-muted-foreground'>
+            Preview builds a batch ranked by SLA state, not stored priority. Nothing
+            is sent to Supervity and nothing is written until you confirm it.
+          </p>
+        )}
+
+        {needsAttention > 0 && (
+          <Link
+            href='/workbench'
+            className='mt-4 inline-flex items-center gap-2 text-sm font-medium text-amber-700 hover:underline'
+          >
+            <Icons.alertTriangle className='h-4 w-4' />
+            {needsAttention} {needsAttention === 1 ? 'ticket needs' : 'tickets need'} a decision
+            <Icons.arrowRight className='h-3.5 w-3.5' />
+          </Link>
+        )}
+
+        {campaign?.last_tick_at && (
+          <p className='mt-4 text-xs text-muted-foreground'>
+            Last scheduler tick {relativeTime(campaign.last_tick_at)}. One run at a time — a
+            ticket already in flight is never started twice.
+          </p>
+        )}
+      </section>
 
       {preview && (
         <Card className='border-brand-cornflower/40 bg-brand-cornflower/5'>
@@ -224,38 +260,95 @@ export default function ProcessedTicketsPage() {
         </Card>
       )}
 
-      <Card>
-        <CardHeader className='flex flex-row items-center justify-between space-y-0'>
-          <div><CardTitle className='text-base'>Processing history</CardTitle><p className='mt-1 text-xs text-muted-foreground'>Terminal tickets are excluded from future previews unless explicitly requeued.</p></div>
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder='Search issue key' className='h-9 w-44 rounded-md border border-input bg-background px-3 font-mono text-xs' />
-        </CardHeader>
-        <CardContent className='p-0'>
-          <div className='overflow-x-auto'>
-            <table className='w-full text-left text-sm'>
-              <thead className='border-y bg-muted/30 text-xs text-muted-foreground'><tr><th className='px-5 py-3'>Ticket</th><th className='px-5 py-3'>Source</th><th className='px-5 py-3'>State</th><th className='px-5 py-3'>Attempts</th><th className='px-5 py-3'>Run</th><th className='px-5 py-3'>Completed</th><th className='px-5 py-3'></th></tr></thead>
-              <tbody>
-                {items.map((item) => <tr key={item.id} className='border-b last:border-0'>
-                  <td className='px-5 py-3 font-mono font-semibold'>{item.issue_key}</td>
-                  <td className='px-5 py-3 text-xs text-muted-foreground'>
-                    {item.source_priority ?? 'unknown'} · {item.source_status ?? 'unknown'}
-                    {/* Why it was ranked here — the stored Priority above is
-                        deliberately not what decided the order. */}
-                    {item.ranking_reason && (
-                      <p className='mt-1 text-[11px] text-brand-cornflower'>{item.ranking_reason}</p>
-                    )}
-                  </td>
-                  <td className='px-5 py-3'><span className={`rounded-full px-2 py-1 text-xs font-medium ${stateClass(item.state)}`}>{humanise(item.state)}</span><br /><VerificationBadge item={item} />{item.last_error && <p className='mt-1 max-w-xs text-xs text-red-600'>{item.last_error}</p>}</td>
-                  <td className='px-5 py-3 tabular-nums'>{item.attempt_count}</td>
-                  <td className='px-5 py-3'>{item.latest_run_id ? <span className='font-mono text-xs text-brand-cornflower' title={item.latest_run_id}>{item.latest_run_id.slice(0, 8)}</span> : '—'}</td>
-                  <td className='px-5 py-3 text-xs text-muted-foreground'>{item.completed_at ? relativeTime(item.completed_at) : '—'}</td>
-                  <td className='px-5 py-3 text-right'>{item.id > 0 && terminalStates.has(item.state) && <Button variant='ghost' size='sm' disabled={busy} onClick={() => { const reason = window.prompt(`Why requeue ${item.issue_key}?`); if (reason?.trim()) action(() => queue.requeue(item.id, reason.trim())) }}>Requeue</Button>}</td>
-                </tr>)}
-                {items.length === 0 && <tr><td colSpan={7} className='px-5 py-10 text-center text-sm text-muted-foreground'>No processed tickets recorded yet.</td></tr>}
-              </tbody>
-            </table>
+      {/* History as rows, not a seven-column table.
+          The table gave Attempts and Run id the same weight as the outcome, so
+          the eye had to hunt for the one thing that matters. Each ticket is now
+          a row that reads in one line — key, what happened, whether the ticket
+          actually changed — with the run id and attempt count demoted to the
+          metadata they are. */}
+      <section className='border-t pt-6'>
+        <div className='flex flex-wrap items-end justify-between gap-4'>
+          <div>
+            <h2 className='text-lg font-semibold text-brand-navy'>History</h2>
+            <p className='mt-1 text-sm text-muted-foreground'>
+              A finished ticket never re-enters a batch unless someone requeues it with a reason.
+            </p>
           </div>
-        </CardContent>
-      </Card>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder='Search issue key'
+            aria-label='Search processed tickets by issue key'
+            className='h-9 w-48 rounded-md border border-input bg-background px-3 font-mono text-xs'
+          />
+        </div>
+
+        <ul className='mt-5 divide-y'>
+          {items.map((item) => (
+            <li key={item.id} className='group flex flex-wrap items-start gap-x-6 gap-y-2 py-4'>
+              <div className='min-w-[8rem]'>
+                <p className='font-mono text-sm font-semibold text-brand-navy'>{item.issue_key}</p>
+                <p className='mt-0.5 text-xs text-muted-foreground'>
+                  {item.completed_at ? relativeTime(item.completed_at) : 'in flight'}
+                </p>
+              </div>
+
+              <div className='min-w-[12rem] flex-1'>
+                <div className='flex flex-wrap items-center gap-2'>
+                  <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${stateClass(item.state)}`}>
+                    {humanise(item.state)}
+                  </span>
+                  <VerificationBadge item={item} />
+                </div>
+                {/* Why it was ranked here. The stored priority is deliberately
+                    not what decided the order, so showing one without the other
+                    reads as a bug. */}
+                {item.ranking_reason && (
+                  <p className='mt-1.5 text-xs text-brand-cornflower'>{item.ranking_reason}</p>
+                )}
+                {item.last_error && (
+                  <p className='mt-1.5 max-w-prose text-xs text-red-700'>{item.last_error}</p>
+                )}
+              </div>
+
+              <div className='flex items-center gap-4 text-xs text-muted-foreground'>
+                {item.attempt_count > 1 && (
+                  <span title={`${item.attempt_count} attempts`}>{item.attempt_count}×</span>
+                )}
+                {item.latest_run_id && (
+                  <span className='font-mono' title={item.latest_run_id}>
+                    {item.latest_run_id.slice(0, 8)}
+                  </span>
+                )}
+                {item.id > 0 && terminalStates.has(item.state) && (
+                  <Button
+                    variant='ghost'
+                    size='sm'
+                    disabled={busy}
+                    className='opacity-0 transition-opacity focus-visible:opacity-100 group-hover:opacity-100'
+                    onClick={() => {
+                      const reason = window.prompt(`Why requeue ${item.issue_key}?`)
+                      if (reason?.trim()) action(() => queue.requeue(item.id, reason.trim()))
+                    }}
+                  >
+                    Requeue
+                  </Button>
+                )}
+              </div>
+            </li>
+          ))}
+        </ul>
+
+        {items.length === 0 && (
+          <div className='py-14 text-center'>
+            <p className='text-sm font-medium text-brand-navy'>Nothing processed yet</p>
+            <p className='mx-auto mt-1 max-w-sm text-sm text-muted-foreground'>
+              Preview a batch to see which tickets the agent would take next, and why
+              each one is ranked where it is.
+            </p>
+          </div>
+        )}
+      </section>
     </div>
   )
 }

@@ -274,8 +274,13 @@ export default function DashboardPage() {
     >
       <motion.div variants={itemVariants} className='flex flex-wrap items-end justify-between gap-4'>
         <div>
-          <h1 className='text-display-3 font-bold tracking-tight text-brand-navy'>
-            Service Desk <span className='text-gradient'>Command Center</span>
+          {/* Emphasis from weight, not a gradient. A three-stop gradient across
+              the product's own name reads as decoration on the first thing
+              anyone sees, and the wordmark is the one place that should look
+              deliberate. */}
+          <h1 className='text-display-3 tracking-tight text-brand-navy'>
+            <span className='font-medium'>Service Desk</span>{' '}
+            <span className='font-bold'>Command Center</span>
           </h1>
           <p className='mt-2 text-muted-foreground'>
             {sd?.available

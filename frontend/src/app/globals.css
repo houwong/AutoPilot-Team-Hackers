@@ -113,11 +113,11 @@
     background: linear-gradient(180deg, #FFFFFF 0%, #F8FAFF 100%);
   }
   
-  /* Text gradient utility */
-  .text-gradient {
-    @apply bg-gradient-to-r from-brand-navy via-brand-purple to-brand-cornflower bg-clip-text text-transparent;
-  }
-  
+  /* No text-gradient utility. Emphasis comes from weight and size; a three-stop
+     gradient across a heading is decoration, and this one sat on the product's
+     own name in the dashboard H1 — the one place that should read deliberate
+     rather than decorated. */
+
   /* Shimmer animation for skeletons */
   .shimmer {
     background: linear-gradient(
