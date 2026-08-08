@@ -1,0 +1,102 @@
+{
+  "exportFormatVersion": 1,
+  "exportedAt": "2026-08-08T00:00:00Z",
+  "rootWorkflowId": "019fe092-c299-7000-8ac4-42d685892cbf",
+  "versionExportMode": "all",
+  "workflows": [
+    {
+      "sourceWorkflowId": "019fe092-c299-7000-8ac4-42d685892cbf",
+      "sourceDefaultVersionNumber": 1,
+      "versions": [
+        {
+          "sourceVersionId": "019fd290-bdf0-7010-8c41-7e9d9f2a1b10",
+          "versionNumber": 1,
+          "commitMessage": "Deterministic Section 4.1 queue planning workflow",
+          "definition": {
+            "name": "Queue Planning Triage",
+            "description": "Read-only deterministic ranking of the active backlog using Operator 5 SLA evidence and Operator 6 incident evidence.",
+            "business_functions": [
+              "IT Service Management",
+              "Queue Planning"
+            ],
+            "envs": [],
+            "inputs": [
+              {
+                "name": "sla_states_json",
+                "description": "Stringified final output from Operator 5.",
+                "type": "textarea",
+                "label": "Operator 5 SLA Evidence",
+                "required": false,
+                "default": "{}",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "incident_clusters_json",
+                "description": "Stringified final output from Operator 6.",
+                "type": "textarea",
+                "label": "Operator 6 Incident Evidence",
+                "required": false,
+                "default": "{}",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "priority_ranking_order",
+                "description": "Six canonical SLA/VIP tiers, in order.",
+                "type": "textarea",
+                "label": "Priority Ranking Order",
+                "required": false,
+                "default": "Breached VIP, Breached Non-VIP, At risk VIP, At risk Non-VIP, Within SLA VIP, Within SLA Non-VIP",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "max_candidates",
+                "description": "Maximum number of ranked tickets to return.",
+                "type": "number",
+                "label": "Maximum Candidates",
+                "required": false,
+                "default": "1000",
+                "is_hidden": false,
+                "multiple": false
+              }
+            ],
+            "start_at": [
+              "step_queue_planning"
+            ],
+            "steps": [
+              {
+                "id": "step_queue_planning",
+                "name": "Deterministic Queue Planning",
+                "description": "Fetch active tickets and rank them using validated SLA and incident evidence.",
+                "services": [
+                  "python",
+                  "supabase"
+                ],
+                "depends_on": [],
+                "code_cell": "import json\nimport os\nimport sys\nfrom datetime import datetime, timezone\n\nimport httpx\n\n\nACTIVE_STATUSES = {\"Open\", \"In Progress\", \"Waiting for support\", \"Waiting for customer\"}\nVALID_SLA = {\"Breached\", \"At risk\", \"Within SLA\"}\nPRIORITY_WEIGHT = {\"highest\": 0, \"critical\": 0, \"high\": 1, \"medium\": 2, \"low\": 3}\nREQUIRED_OUTPUT_FIELDS = (\n    \"schema_version\", \"generated_at\", \"effective_as_of\", \"tickets_scanned\",\n    \"tickets_eligible\", \"sla_evaluated_count\", \"prioritized_tickets\",\n)\n\n\ndef _json_value(value, label):\n    if isinstance(value, dict) and isinstance(value.get(\"outputs\"), list):\n        for activity in reversed(value[\"outputs\"]):\n            if not isinstance(activity, dict):\n                continue\n            outputs = activity.get(\"outputs\") or {}\n            raw = outputs.get(\"output\") if isinstance(outputs, dict) else None\n            if isinstance(raw, (dict, list)):\n                return raw\n            if isinstance(raw, str) and raw.strip():\n                try:\n                    parsed = json.loads(raw)\n                except json.JSONDecodeError:\n                    continue\n                if isinstance(parsed, (dict, list)):\n                    return parsed\n        raise ValueError(\"INVALID_\" + label.upper())\n    if isinstance(value, (dict, list)):\n        return value\n    if value is None or str(value).strip() == \"\":\n        raise ValueError(\"MISSING_\" + label.upper())\n    try:\n        return json.loads(str(value))\n    except json.JSONDecodeError as exc:\n        raise ValueError(\"INVALID_\" + label.upper()) from exc\n\n\ndef _as_list(payload, key, label):\n    if isinstance(payload, list):\n        return payload\n    value = payload.get(key) if isinstance(payload, dict) else None\n    if not isinstance(value, list):\n        raise ValueError(\"INVALID_\" + label.upper())\n    return value\n\n\ndef _iso(value):\n    text = str(value or \"\").strip()\n    if not text:\n        return None\n    candidate = text.replace(\"Z\", \"+00:00\")\n    try:\n        parsed = datetime.fromisoformat(candidate)\n    except ValueError:\n        return None\n    if parsed.tzinfo is None:\n        parsed = parsed.replace(tzinfo=timezone.utc)\n    return parsed.astimezone(timezone.utc)\n\n\ndef _priority_order(raw):\n    expected = (\n        \"Breached VIP\", \"Breached Non-VIP\", \"At risk VIP\",\n        \"At risk Non-VIP\", \"Within SLA VIP\", \"Within SLA Non-VIP\",\n    )\n    values = tuple(part.strip() for part in str(raw or \"\").split(\",\") if part.strip())\n    if values != expected or len(set(values)) != 6:\n        raise ValueError(\"INVALID_PRIORITY_RANKING_ORDER\")\n    return {value: position + 1 for position, value in enumerate(values)}\n\n\ndef _sla_evidence(payload):\n    tickets = _as_list(payload, \"tickets\", \"sla_evidence\")\n    effective_as_of = payload.get(\"effective_as_of\") if isinstance(payload, dict) else None\n    if not effective_as_of:\n        raise ValueError(\"MISSING_SLA_EFFECTIVE_AS_OF\")\n    evidence = {}\n    for ticket in tickets:\n        if not isinstance(ticket, dict):\n            raise ValueError(\"INVALID_SLA_EVIDENCE\")\n        issue_key = str(ticket.get(\"issue_key\") or ticket.get(\"Issue key\") or \"\").strip()\n        status = str(ticket.get(\"computed_sla_state\") or ticket.get(\"sla_status\") or \"\").strip()\n        vip = ticket.get(\"is_vip\", ticket.get(\"vip\"))\n        if not issue_key or status not in VALID_SLA or not isinstance(vip, bool):\n            raise ValueError(\"INVALID_SLA_EVIDENCE\")\n        evidence[issue_key] = {\"sla_status\": status, \"vip\": vip}\n    return evidence, str(effective_as_of)\n\n\ndef _incident_members(cluster):\n    if not isinstance(cluster, dict):\n        return [], None, None, None, [], 0\n    parent = str(cluster.get(\"parent_issue_key\") or \"\").strip() or None\n    children = [str(key).strip() for key in (cluster.get(\"child_issue_keys\") or []) if str(key).strip()]\n    members = [str(key).strip() for key in (cluster.get(\"member_keys\") or []) if str(key).strip()]\n    keys = list(dict.fromkeys(([parent] if parent else []) + children + members))\n    count = cluster.get(\"ticket_count\", cluster.get(\"member_count\"))\n    if not isinstance(count, int) or count < len(keys):\n        count = len(keys)\n    groups = cluster.get(\"affected_assignment_groups\", cluster.get(\"assignment_groups\")) or []\n    groups = [str(group).strip() for group in groups if str(group).strip()]\n    action = str(cluster.get(\"recommended_action\") or cluster.get(\"major_incident_action\") or \"monitor\").strip()\n    incident_key = str(cluster.get(\"linked_incident_label\") or parent or \"\").strip() or None\n    vip_count = cluster.get(\"vip_count\")\n    if not isinstance(vip_count, int) or vip_count < 0:\n        vip_count = 0\n    return keys, incident_key, action, count, groups, vip_count\n\n\ndef _incident_evidence(payload):\n    raw = payload.get(\"clusters\") if isinstance(payload, dict) else payload\n    if not isinstance(raw, list):\n        raise ValueError(\"INVALID_INCIDENT_EVIDENCE\")\n    result = {}\n    for cluster in raw:\n        keys, incident_key, action, count, groups, vip_count = _incident_members(cluster)\n        if not keys:\n            continue\n        normalized = {\n            \"major_incident_key\": incident_key,\n            \"major_incident_action\": action,\n            \"incident_ticket_count\": count,\n            \"incident_vip_count\": vip_count,\n            \"assignment_groups\": groups,\n        }\n        for key in keys:\n            result.setdefault(key, normalized)\n    return result\n\n\nasync def _fetch_active_issues():\n    base_url = str(\n        os.environ.get(\"SUPABASE_URL\")\n        or \"https://pkwvlnvxmawvgqzqvkcg.supabase.co\"\n    ).rstrip(\"/\")\n    token = os.environ.get(\"SUPABASE_TOKEN\")\n    if not token:\n        raise ValueError(\"SUPABASE_READ_CONFIGURATION_MISSING\")\n    api_key = token\n    if token.startswith(\"sbp_\"):\n        project_ref = base_url.split(\"//\", 1)[-1].split(\".\", 1)[0]\n        async with httpx.AsyncClient(timeout=30.0) as client:\n            key_response = await client.get(\n                \"https://api.supabase.com/v1/projects/\" + project_ref + \"/api-keys\",\n                headers={\"Authorization\": \"Bearer \" + token},\n            )\n        key_response.raise_for_status()\n        api_key = next(\n            (\n                item.get(\"api_key\")\n                for item in key_response.json()\n                if item.get(\"name\") == \"service_role\"\n            ),\n            None,\n        )\n        if not api_key:\n            raise ValueError(\"SUPABASE_SERVICE_ROLE_KEY_MISSING\")\n    params = {\n        \"select\": 'row_id,\"Issue key\",\"Status\",\"Priority\",\"Updated\",\"customfield_10101 (Assignment group)\"',\n        \"Status\": \"in.(Open,In Progress,Waiting for support,Waiting for customer)\",\n        \"limit\": \"1000\",\n    }\n    headers = {\"apikey\": api_key, \"Authorization\": \"Bearer \" + api_key}\n    async with httpx.AsyncClient(timeout=30.0) as client:\n        response = await client.get(base_url + \"/rest/v1/issues\", params=params, headers=headers)\n    response.raise_for_status()\n    rows = response.json()\n    if not isinstance(rows, list):\n        raise ValueError(\"INVALID_SUPABASE_ISSUE_ROWS\")\n    return rows\n\n\nasync def step_queue_planning_operator():\n    sla_payload = _json_value(user_inputs.get(\"sla_states_json\"), \"sla_states_json\")\n    incident_payload = _json_value(user_inputs.get(\"incident_clusters_json\"), \"incident_clusters_json\")\n    sla, effective_as_of = _sla_evidence(sla_payload)\n    incidents = _incident_evidence(incident_payload)\n    priority_ranks = _priority_order(user_inputs.get(\"priority_ranking_order\"))\n    max_candidates = min(int(user_inputs.get(\"max_candidates\") or 1000), 1000)\n    if max_candidates < 1:\n        raise ValueError(\"INVALID_MAX_CANDIDATES\")\n\n    rows = await _fetch_active_issues()\n    active = []\n    for row in rows:\n        status = str(row.get(\"Status\") or \"\").strip()\n        issue_key = str(row.get(\"Issue key\") or \"\").strip()\n        if status in ACTIVE_STATUSES and issue_key:\n            active.append(row)\n    missing = [str(row.get(\"Issue key\") or \"\").strip() for row in active if str(row.get(\"Issue key\") or \"\").strip() not in sla]\n    if missing:\n        raise ValueError(\"INCOMPLETE_SLA_EVIDENCE: \" + \",\".join(sorted(missing)[:20]))\n\n    ranked = []\n    for row in active:\n        issue_key = str(row.get(\"Issue key\")).strip()\n        sla_row = sla[issue_key]\n        tier = sla_row[\"sla_status\"] + (\" VIP\" if sla_row[\"vip\"] else \" Non-VIP\")\n        incident = incidents.get(issue_key) or {}\n        action = incident.get(\"major_incident_action\")\n        actionable = action in {\"declare_major_incident\", \"attach_to_existing\"}\n        stored_priority = str(row.get(\"Priority\") or \"\").strip()\n        updated = _iso(row.get(\"Updated\"))\n        ranked.append({\n            \"issue_key\": issue_key,\n            \"row_id\": row.get(\"row_id\"),\n            \"source_status\": row.get(\"Status\"),\n            \"source_priority\": row.get(\"Priority\"),\n            \"source_updated_at\": row.get(\"Updated\"),\n            \"assignment_group\": row.get(\"customfield_10101 (Assignment group)\"),\n            \"sla_status\": sla_row[\"sla_status\"],\n            \"vip\": sla_row[\"vip\"],\n            \"_tier_rank\": priority_ranks[tier],\n            \"_incident_boost\": 0 if actionable else 1,\n            \"_incident_count\": int(incident.get(\"incident_ticket_count\") or 0),\n            \"_incident_vip_count\": int(incident.get(\"incident_vip_count\") or 0),\n            \"_stored_priority_rank\": PRIORITY_WEIGHT.get(stored_priority.casefold(), 9),\n            \"_updated\": updated,\n            \"major_incident_key\": incident.get(\"major_incident_key\"),\n            \"major_incident_action\": action,\n            \"incident_ticket_count\": incident.get(\"incident_ticket_count\"),\n            \"incident_vip_count\": incident.get(\"incident_vip_count\"),\n        })\n\n    ranked.sort(key=lambda item: (\n        item[\"_tier_rank\"],\n        item[\"_incident_boost\"],\n        -item[\"_incident_count\"],\n        -item[\"_incident_vip_count\"],\n        item[\"_stored_priority_rank\"],\n        item[\"_updated\"] is None,\n        item[\"_updated\"] or datetime.max.replace(tzinfo=timezone.utc),\n        item[\"issue_key\"],\n    ))\n    output = []\n    for position, item in enumerate(ranked[:max_candidates], 1):\n        tier = item[\"sla_status\"] + (\" VIP\" if item[\"vip\"] else \" Non-VIP\")\n        incident_note = \"\"\n        if item[\"major_incident_action\"] in {\"declare_major_incident\", \"attach_to_existing\"}:\n            incident_note = \"; major incident \" + str(item[\"major_incident_key\"] or \"detected\") + \" with \" + str(item[\"incident_ticket_count\"] or 0) + \" tickets\"\n        output.append({\n            key: value for key, value in item.items() if not key.startswith(\"_\")\n        } | {\n            \"priority_rank\": priority_ranks[tier],\n            \"rank_position\": position,\n            \"ranking_reason\": tier + incident_note + \"; stored \" + str(item[\"source_priority\"] or \"unknown\"),\n        })\n    result = {\n        \"schema_version\": \"1\",\n        \"generated_at\": datetime.now(timezone.utc).isoformat(),\n        \"effective_as_of\": effective_as_of,\n        \"tickets_scanned\": len(rows),\n        \"tickets_eligible\": len(active),\n        \"sla_evaluated_count\": len(sla),\n        \"prioritized_tickets\": output,\n    }\n    globals()[\"prioritized_tickets\"] = result\n    print(json.dumps(result, indent=2, default=str))\n\n\nawait step_queue_planning_operator()\n",
+                "next_steps": []
+              }
+            ],
+            "pip_packages": [
+              "httpx"
+            ],
+            "integration_overrides": {}
+          }
+        }
+      ]
+    }
+  ],
+  "schedules": [],
+  "integrationsManifest": {
+    "services": [
+      "python",
+      "supabase"
+    ],
+    "envNames": [
+      "SUPABASE_URL",
+      "SUPABASE_TOKEN"
+    ]
+  }
+}

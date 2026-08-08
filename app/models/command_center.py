@@ -186,6 +186,16 @@ class QueueCampaign(Base):
     completed_at = Column(DateTime(timezone=True))
     last_tick_at = Column(DateTime(timezone=True))
 
+    # Frozen planner provenance for the preview. These fields are nullable so
+    # campaigns created before Queue Planner v2 remain readable and rollback
+    # to legacy mode does not require a destructive migration.
+    planner_mode = Column(String(32))
+    planner_run_id = Column(String(128))
+    planner_generated_at = Column(String(64))
+    planner_effective_as_of = Column(String(64))
+    planner_stale = Column(Boolean, default=False)
+    planner_policy_snapshot = Column(JSON)
+
     items = relationship("QueueItem", back_populates="campaign", cascade="all, delete-orphan")
 
 
@@ -229,6 +239,8 @@ class QueueItem(Base):
     priority_rank = Column(Integer)
     ranked_by = Column(String(32))
     ranking_reason = Column(Text)
+    rank_position = Column(Integer)
+    ranking_evidence = Column(JSON)
 
     campaign = relationship("QueueCampaign", back_populates="items")
 

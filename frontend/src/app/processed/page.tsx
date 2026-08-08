@@ -143,7 +143,7 @@ export default function ProcessedTicketsPage() {
         <div>
           <h1 className='text-display-3 font-bold tracking-tight text-brand-navy'>Processed Tickets</h1>
           <p className='mt-2 max-w-xl text-muted-foreground'>
-            One ticket at a time. Nothing runs until you confirm the batch.
+            One ticket at a time. Preview plans read-only; execution waits for confirmation.
           </p>
         </div>
         <Link href='/'><Button variant='outline'>Back to Dashboard</Button></Link>
@@ -167,6 +167,22 @@ export default function ProcessedTicketsPage() {
             </span>
             {total > 0 && (
               <span className='text-sm text-muted-foreground'>batch of {total}</span>
+            )}
+            {campaign?.planner_mode && campaign.planner_mode !== 'legacy' && (
+              <span
+                className={`rounded-full px-2 py-1 text-xs font-medium ${
+                  campaign.planner_stale
+                    ? 'bg-amber-500/10 text-amber-800'
+                    : 'bg-brand-cornflower/10 text-brand-cornflower'
+                }`}
+              >
+                {campaign.planner_stale
+                  ? 'Queue Planner evidence is stale'
+                  : 'Ranked by Queue Planner'}
+                {campaign.planner_run_id && (
+                  <span className='ml-1 font-mono'>run {campaign.planner_run_id.slice(0, 8)}</span>
+                )}
+              </span>
             )}
           </div>
           <div className='flex flex-wrap gap-2'>
@@ -203,8 +219,9 @@ export default function ProcessedTicketsPage() {
           </>
         ) : (
           <p className='mt-3 max-w-xl text-sm text-muted-foreground'>
-            Preview builds a batch ranked by SLA state, not stored priority. Nothing
-            is sent to Supervity and nothing is written until you confirm it.
+            Preview runs the read-only Queue Planner and ranks by recomputed SLA
+            evidence, not stored priority. Ticket execution and Supabase writes wait
+            for confirmation.
           </p>
         )}
 
@@ -231,17 +248,25 @@ export default function ProcessedTicketsPage() {
         <Card className='border-brand-cornflower/40 bg-brand-cornflower/5'>
           <CardHeader><CardTitle className='text-base'>Preview — confirmation required</CardTitle></CardHeader>
           <CardContent>
-            <p className='mb-3 text-sm text-muted-foreground'>No Supervity run has started. Confirming this list will process these exact tickets and may update live Supabase records.</p>
-            {/* Show the order's justification, not just the keys. The batch is
-                ranked on SLA state and VIP by Operator 1, which routinely puts a
-                Low-priority breached ticket above a Highest one still within
-                target — that looks wrong until you can see why. */}
+            <p className='mb-3 text-sm text-muted-foreground'>The read-only Queue Planner produced this list. No ticket execution, Supabase write, or notification has started. Confirming will process these exact tickets and may update live Supabase records.</p>
+            {preview.campaign.planner_stale && (
+              <p className='mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800'>This preview uses a stale Queue Planner result. Confirm only if the frozen evidence is still acceptable.</p>
+            )}
+            {/* Show the order's frozen planner evidence, not just the keys. A
+                breached Low-priority ticket can outrank a Highest ticket within
+                target; the frozen evidence makes that intentional order reviewable.
+                */}
             <ol className='space-y-1'>
               {preview.items.map((item, i) => (
                 <li key={item.issue_key} className='flex flex-wrap items-baseline gap-2 text-xs'>
-                  <span className='w-5 tabular-nums text-muted-foreground'>{i + 1}.</span>
+                  <span className='w-5 tabular-nums text-muted-foreground'>{item.rank_position ?? i + 1}.</span>
                   <span className='rounded-md border bg-background px-2 py-1 font-mono'>{item.issue_key}</span>
                   <span className='text-muted-foreground'>stored {item.source_priority ?? 'unknown'}</span>
+                  {typeof item.ranking_evidence?.major_incident_key === 'string' && (
+                    <span className='rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-amber-800'>
+                      {item.ranking_evidence.major_incident_action === 'attach_to_existing' ? 'Incident' : 'Major incident'} {item.ranking_evidence.major_incident_key} · {typeof item.ranking_evidence.incident_ticket_count === 'number' ? item.ranking_evidence.incident_ticket_count : 0} tickets
+                    </span>
+                  )}
                   {item.ranking_reason && (
                     <span className='text-brand-cornflower'>— {item.ranking_reason}</span>
                   )}

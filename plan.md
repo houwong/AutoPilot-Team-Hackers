@@ -1,209 +1,256 @@
-# Automatic Ticket Queue and Processed-Ticket History Implementation Plan
+# Section 4.1 New Queue-Planning Operator Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` or `superpowers:executing-plans`. Do not begin implementation until explicitly authorized.
 
-**Goal:** Add two Command Center capabilities: safely process tickets through the existing Supervity Orchestrator as a controlled queue, and clearly show every ticket’s processing history and final outcome.
+**Goal:** Create a new, deterministic queue-planning operator and a new read-only Queue Planner workflow without modifying or using the existing Operator 1 for planning.
 
-**Architecture:** PostgreSQL stores queue campaigns, queue items, run links, and outcomes. The backend selects explicit ticket keys from Supabase and starts exactly one existing Orchestrator run at a time. A five-minute scheduler tick advances the confirmed batch. The Command Center provides preview/confirmation, queue controls, processed-ticket history, and explicit requeue actions.
+**Architecture:** Existing Operator 5 and Operator 6 run in parallel. A genuinely new Operator 1 Queue Planning workflow consumes their evidence and ranks the active backlog. A new Queue Planner workflow owns that read-only graph. The existing Operator 1 and execution orchestrator remain unchanged.
 
-**Tech Stack:** FastAPI, SQLAlchemy, Alembic, PostgreSQL, Next.js/TypeScript, Supabase, Supervity Auto API, PowerShell/Windows Task Scheduler.
-
-## Implementation status (2026-08-07)
-
-- [x] Feature branch created: `feature/ticket-queue-history`.
-- [x] Queue schema, backend queue service/API, AgentRun identity, Processed Tickets page, Dashboard summary, scheduler scripts, and runbook implemented.
-- [x] Database migration applied locally; 48 backend tests, TypeScript validation, production build, and 37/37 Orchestrator checks pass.
-- [x] Manual target runs reject duplicate active targets and unresolved Workbench items; Workbench follow-ups remain allowed.
-- [x] Controlled live branches verified: allow `ITSM-2005`, escalate/CAB `ITSM-2180`, block `ITSM-2065`.
-- [x] Queue preview/confirm, one-ticket tick, pause/cancel controls, explicit target linkage, and `/processed` history were exercised locally.
-- [x] Human rejection lifecycle verified with `ITSM-2020`: the original parked run completed, the rejected notification was recorded, and the queue outcome is `human_rejected`.
-- [x] Post-decision reconciliation now serializes parked-run backfills and prefers terminal activity rows, preventing a completed notification from being hidden by a stale duplicate `running` row.
-- [ ] A full multi-ticket batch is not exhausted automatically; it would modify real Supabase tickets and must be started only after reviewing the preview in the UI.
-
-### Fresh verification record
-
-The following commands were run on this branch after the final synchronization fix:
-
-```text
-docker compose exec -T backend pytest -q                         48 passed, 9 warnings
-docker compose exec -T backend python scripts/check_orchestrator.py 37/37 passed
-docker compose exec -T frontend npx tsc --noEmit                 exit 0
-docker compose run --rm -T frontend npx next build               exit 0 (22 routes)
-GET /api/health                                                  200
-GET /processed                                                    200
-POST /api/queue/tick (no active campaign)                         no_running_campaign
-```
-
-The live tests intentionally used only the known demonstration tickets. The
-CAB approval path was not approved during this pass because it changes
-`CHG-0001` to Implemented; the rejection path and the allow/block paths were
-still exercised. A complete automatic drain of all Supabase tickets remains a
-separate, destructive operation rather than a safe regression test.
+**Tech Stack:** Supervity Auto workflow artifacts, deterministic Python code cells, FastAPI, SQLAlchemy, Alembic, PostgreSQL, Next.js/TypeScript, pytest.
 
 ## Global Constraints
 
-- Do not modify or rebuild the seven Supervity Operators or current Orchestrator.
-- Every Orchestrator run must receive an explicit `Target Issue Key`.
-- Never allow two active runs for the same queue campaign.
-- Do not treat a successful API request as a successful remediation; classify outcomes from actual run steps.
-- Tickets already completed, blocked, or rejected must not be selected again automatically.
-- Reprocessing requires an explicit administrator Requeue action and a reason.
-- Human-review tickets must remain parked until the existing Workbench process completes them.
-- Supabase remains the source of truth for ticket content/status. PostgreSQL stores Command Center queue and audit state.
-- Outlook quota failures must be displayed honestly but must not change the ticket-processing outcome.
-- Preserve existing dirty/untracked files and unrelated user changes.
+- Create a genuinely new operator with a new workflow ID.
+- The new Queue Planner must reference the new operator, never the existing Operator 1.
+- Do not modify the existing Operator 1 or execution orchestrator.
+- Reuse existing Operator 5 and Operator 6 unchanged.
+- Prefer deterministic Python code cells and direct JSON editing over AI-generated prompts.
+- Do not use an LLM in the new planning operator.
+- Create a new Git branch before changing code, artifacts, or workflows.
+- Preserve `docs/queue-planning-and-state-consistency-notes.md` unless separately requested.
+- Generate and validate import artifacts before importing or publishing workflows.
+- Keep an explicit manual rollback mode; never fall back to legacy ranking automatically.
 
-## 1. Database and Run Identity
+---
 
-### Queue campaign model
+## Task 0: Branch and Plan Checkpoint
 
-- [ ] Add an Alembic migration and SQLAlchemy model for `queue_campaigns`.
-- [ ] Store `id`, `name`, `source` (`manual` or `schedule`), `status` (`preview`, `running`, `paused`, `completed`, `cancelled`), `batch_limit` (default `10`), `created_by`, `created_at`, `confirmed_at`, `started_at`, `completed_at`, and `last_tick_at`.
-- [ ] Calculate counters from queue items instead of duplicating mutable counter columns.
+- [x] Create `feat/queue-planner-4-1` from merged HEAD `432798154b0c17037d7d04812164276ade5c9d8c`.
+- [x] Replace the root `plan.md` with this approved plan.
+- [ ] Commit only the plan before implementation code.
+- [ ] Confirm the untracked planning notes remain unmodified and uncommitted.
 
-### Queue item model
+## Task 1: Create a New Deterministic Planning Operator
 
-- [ ] Add `queue_items` with `id`, `campaign_id`, `issue_key`, Supabase snapshot fields (`source_status`, `source_priority`, `source_updated_at`), `state`, `outcome`, `latest_run_id`, `attempt_count`, `last_error`, `requeued_from_id`, `requeue_reason`, and lifecycle timestamps.
-- [ ] Support these states: `preview`, `pending`, `running`, `awaiting_human`, `auto_remediated`, `human_approved`, `blocked`, `human_rejected`, `failed`, `skipped_closed`, `cancelled`, and `completed_unknown`.
-- [ ] Add a unique constraint on `(campaign_id, issue_key)` and indexes on `issue_key`, `state`, `latest_run_id`, and timestamps.
+Create `supervity/queue-planner/operator-1-queue-planning.import.json` with workflow name `Operator 1 — Queue Planning Triage`.
 
-### Agent-run linkage
+Inputs:
 
-- [ ] Extend `AgentRun` with `selected_issue_key` and `queue_item_id`.
-- [ ] Keep the existing `issue_keys` JSON field for compatibility.
-- [ ] For explicit-target runs, save `selected_issue_key` before execution.
-- [ ] For legacy blank-target runs, extract the actual key from Operator 1’s final structured result and backfill `selected_issue_key` and `issue_keys`.
-- [ ] Update Dashboard displays to use `selected_issue_key` before falling back to `issue_keys[0]`.
+```text
+sla_states_json
+incident_clusters_json
+priority_ranking_order
+max_candidates
+```
 
-## 2. Queue Selection and Execution
+Requirements:
 
-### Preview eligibility
+- Create a new workflow ID during import.
+- Fetch active ticket fields from Supabase using deterministic Python/integration code.
+- Parse Operator 5 and Operator 6 evidence using deterministic Python.
+- Do not read `customfield_10030` for ranking.
+- Do not call `call_ai_llm`.
+- Do not delegate to the existing Operator 1.
+- Filter exactly `Open`, `In Progress`, `Waiting for support`, and `Waiting for customer`.
+- Require valid Operator 5 evidence for every active ticket.
+- Normalize both current and legacy Operator 6 field shapes.
 
-- [ ] Build a queue service that queries Supabase without modifying tickets.
-- [ ] Include only active statuses: `Open`, `In Progress`, `Waiting for support`, and `Waiting for customer`.
-- [ ] Exclude closed/resolved/cancelled tickets, tickets with active `pending`, `running`, or `awaiting_human` runs, tickets with unresolved Workbench items, and tickets previously ending in `auto_remediated`, `human_approved`, `blocked`, or `human_rejected`.
-- [ ] Exclude failed tickets that exhausted retries until an administrator explicitly requeues them.
-- [ ] Sort by priority (Highest → High → Medium → Low → unknown), then oldest `Updated` timestamp, then stable `row_id`/issue-key tie-breaker.
-- [ ] Default preview size is 10 tickets.
-- [ ] Preview must show the exact tickets that will be processed, with no writes to Supabase or Supervity.
-- [ ] Confirmation converts the preview snapshot to `pending`; later Supabase changes must not silently replace tickets in that confirmed batch.
+Ranking order:
 
-### Queue tick
+1. Operator 5 SLA/VIP tier.
+2. Actionable major incident within the same tier.
+3. Incident ticket count descending.
+4. Incident VIP count descending.
+5. Highest/Critical, High, Medium, Low, unknown.
+6. Oldest Updated timestamp.
+7. Issue key.
 
-- [ ] Implement a reusable queue-tick service.
-- [ ] Synchronize existing `running` and `awaiting_human` items with AgentRun and Workbench state.
-- [ ] Return a no-op when the campaign is paused, completed, or already has an active run.
-- [ ] Transactionally claim one pending item using row locking such as `FOR UPDATE SKIP LOCKED`.
-- [ ] Recheck the ticket’s current Supabase status; mark a now-closed ticket `skipped_closed`.
-- [ ] Start the existing Orchestrator with the item’s explicit issue key, link the AgentRun and QueueItem, and leave other items pending.
-- [ ] Start no more than one ticket per tick.
+Output strict JSON containing the full ranked active backlog, capped at 1,000, with SLA, incident, and tie-break evidence.
 
-### Completion classification
+Add an offline validator that fails if the artifact references the old Operator 1, contains `call_ai_llm`, reads stored SLA for ranking, omits required output fields, or contains write/notification operations.
 
-- [ ] `step_6_notif_auto` completed → `auto_remediated`.
-- [ ] `step_4_rev` waiting → `awaiting_human`.
-- [ ] Approved review followed by `step_5_exec` and manual notification → `human_approved`.
-- [ ] CAB gate decision `block` → `blocked`.
-- [ ] Rejected human form → `human_rejected`.
-- [ ] AgentRun failed/cancelled → `failed`.
-- [ ] A run that succeeds without a recognized terminal path → `completed_unknown`, never an automated success.
-- [ ] Record notification delivery separately from remediation outcome.
-- [ ] Permit at most two attempts for transient technical failures; after that require explicit requeue.
-- [ ] Mark a campaign `completed` when no pending or active items remain.
+## Task 2: Create the New Read-Only Queue Planner
 
-### Human-review lifecycle
+Create `supervity/queue-planner/queue-planner.import.json` with workflow name `Queue Planner — Read Only`.
 
-- [ ] Mark a parked ticket `awaiting_human` and allow later tickets in the campaign to continue.
-- [ ] Do not create another run for that ticket.
-- [ ] Synchronize the resumed original run after Workbench submits the real Supervity form.
-- [ ] Record the final result as `human_approved`, `human_rejected`, `failed`, or `completed_unknown`.
+```text
+Existing Operator 5 ─┐
+                     ├→ New Queue Planning Operator → End
+Existing Operator 6 ─┘
+```
 
-## 3. APIs and Scheduler
+Inputs:
 
-Add authenticated endpoints:
+```text
+sla_targets
+at_risk_window_minutes
+default_region
+as_of
+flood_threshold_count
+flood_window_minutes
+correlation_confidence_threshold
+include_relationship_types
+recurring_error_min_count
+priority_ranking_order
+max_candidates
+```
 
-| Method | Endpoint | Purpose |
-|---|---|---|
-| `POST` | `/api/queue/campaigns/preview` | Generate a read-only preview, default limit 10 |
-| `POST` | `/api/queue/campaigns/{id}/confirm` | Confirm and start the previewed batch |
-| `GET` | `/api/queue/campaigns/active` | Return current campaign and counters |
-| `GET` | `/api/queue/campaigns/{id}` | Return campaign details |
-| `POST` | `/api/queue/campaigns/{id}/pause` | Stop new ticket starts |
-| `POST` | `/api/queue/campaigns/{id}/resume` | Resume processing |
-| `POST` | `/api/queue/campaigns/{id}/cancel` | Cancel only pending items |
-| `POST` | `/api/queue/tick` | Synchronize state and start at most one ticket |
-| `GET` | `/api/queue/items` | Paginated history with filters and search |
-| `POST` | `/api/queue/items/{id}/requeue` | Explicitly create a replacement item |
+Requirements:
 
-- [ ] Require a non-empty reason for requeue and preserve the old queue record.
-- [ ] Add `QUEUE_TICK_TOKEN` configuration for Windows Task Scheduler.
-- [ ] Add a PowerShell tick script and installation/documentation for Task Scheduler.
-- [ ] Configure the recommended interval as every five minutes.
-- [ ] The scheduler only advances a confirmed running campaign; it never creates or confirms a batch automatically.
-- [ ] Manual “Process next now” uses the same tick service.
-- [ ] Make scheduler requests idempotent and safe when ticks overlap.
+- Build mappings through direct code-cell editing.
+- Operator 5 and Operator 6 start in parallel.
+- The new planning operator waits for both.
+- Parse Operator 5's final `tickets` and `effective_as_of` fields exactly.
+- Parse Operator 6's final `clusters` field exactly.
+- Raise an error for missing or malformed operator output.
+- End immediately after ranking.
+- Never invoke Operators 2, 3, 4, or 7.
+- Never write Supabase or send Outlook/Slack messages.
 
-## 4. Command Center Interface
+Import sequence:
 
-### Processed Tickets page
+1. Import the new planning operator.
+2. Record its assigned ID as `AUTO_WF_OP1_PLANNER`.
+3. Generate the Queue Planner artifact with that exact ID.
+4. Import it and record `AUTO_WF_QUEUE_PLANNER`.
+5. Validate that neither ID equals the existing Operator 1 ID.
 
-- [ ] Add a sidebar entry and `/processed` page.
-- [ ] Add Preview next 10, Confirm and Start, Pause, Resume, Process next now, and Cancel controls.
-- [ ] Display scheduler status and the five-minute interval.
-- [ ] The confirmation screen must list all selected issue keys and warn that execution can modify live Supabase data.
+## Task 3: Add Dual-Path Backend Integration
 
-### History table
+Add an explicit mode:
 
-- [ ] Display issue key, source priority/status, queue state, final outcome, run ID, Workbench/CAB involvement, remediation action, notification delivery, attempts, timestamps, and errors/warnings.
-- [ ] Add outcome/state/campaign/date/issue-key filters and pagination.
-- [ ] Link to run details and Workbench items where available.
-- [ ] Make `completed_unknown` and notification failures visible warnings.
-- [ ] Restrict Requeue to authorized users and require a confirmation plus reason.
+```text
+QUEUE_PLANNER_MODE=legacy
+QUEUE_PLANNER_MODE=supervity_v2
+```
 
-### Dashboard summary
+Implement:
 
-- [ ] Show active campaign progress, pending/running/awaiting-human counts, auto-remediated, human-approved, blocked/rejected, failed/unknown counts, and five recent completions.
-- [ ] Link the summary to `/processed`.
-- [ ] Replace misleading “whole queue” text with the actual selected ticket when recoverable.
+```python
+async def legacy_ranked_backlog(db) -> PlannerResult: ...
+async def v2_ranked_backlog(db) -> PlannerResult: ...
+async def ranked_backlog(db) -> PlannerResult: ...
+```
 
-## 5. Tests and Acceptance
+Rules:
 
-### Backend tests
+- `legacy` retains the current implementation for manual rollback.
+- `supervity_v2` calls only `AUTO_WF_QUEUE_PLANNER`.
+- Never switch modes automatically.
+- Reject invalid mode values explicitly.
+- A v2 failure never invokes legacy mode.
 
-- [ ] Test preview eligibility, deterministic ordering, and zero side effects.
-- [ ] Test confirmation snapshot, explicit target creation, and one-ticket-per-tick behavior.
-- [ ] Test concurrent/repeated ticks cannot duplicate runs.
-- [ ] Test paused/completed campaigns, closed-after-preview tickets, retries, and campaign completion.
-- [ ] Test every outcome classification and the human-review lifecycle.
-- [ ] Test global exclusion of terminal tickets and reason-required requeue.
-- [ ] Test legacy blank-target issue-key backfill and migration upgrade/downgrade.
-- [ ] Use mocked Supabase and Supervity responses; never modify live tickets in automated tests.
+Cache behavior:
 
-### Frontend tests
+```text
+Fresh cache: 60 seconds
+Failure cache: 600 seconds
+Cache key: normalized policy fingerprint
+```
 
-- [ ] Test preview → confirmation → running state.
-- [ ] Test Pause, Resume, Process next, Cancel, filters, pagination, warnings, and Requeue confirmation.
-- [ ] Run frontend type checking and production build.
+If v2 fails, use a same-policy cache younger than 600 seconds and mark it stale; otherwise return HTTP 503 without cancelling or replacing an existing preview.
 
-### Existing-system regression
+Environment additions:
 
-- [ ] Run the backend test suite.
-- [ ] Run `docker compose exec backend python scripts/check_orchestrator.py`.
-- [ ] Require all existing Orchestrator structural checks to remain green.
-- [ ] Verify manual Dashboard runs and Workbench approvals still work.
-- [ ] Confirm no Supervity workflow version or edge changed.
+```text
+QUEUE_PLANNER_MODE=legacy
+AUTO_WF_OP1_PLANNER=
+AUTO_WF_QUEUE_PLANNER=
+QUEUE_PLANNER_FRESH_TTL=60
+QUEUE_PLANNER_STALE_TTL=600
+```
 
-### Controlled end-to-end acceptance
+## Task 4: Persist and Display Ranking Evidence
 
-- [ ] Preview exactly 10 safe test tickets.
-- [ ] Confirm and invoke one tick; verify one explicit-target AgentRun.
-- [ ] Let the five-minute scheduler advance the batch.
-- [ ] Verify allow, escalate/human-review, and block outcomes.
-- [ ] Complete one Workbench decision and verify the original paused run completes.
-- [ ] Verify all outcomes appear on `/processed` and in the Dashboard summary.
-- [ ] Start another preview and confirm terminal tickets are excluded.
-- [ ] Requeue one ticket with a reason and confirm the old history remains visible.
+Add nullable, backward-compatible fields.
 
-## Completion Criteria
+`queue_campaigns`:
 
-The feature is complete when a user can preview 10 tickets, confirm the live batch, process one ticket every five minutes through the current Orchestrator, pause/resume safely, handle human decisions through Workbench, and see an accurate permanent history without automatic duplicate processing.
+```text
+planner_mode
+planner_run_id
+planner_generated_at
+planner_effective_as_of
+planner_stale
+planner_policy_snapshot JSON
+```
+
+`queue_items`:
+
+```text
+rank_position
+ranking_evidence JSON
+```
+
+Keep existing `sla_status`, `vip`, `priority_rank`, `ranked_by`, and `ranking_reason` fields.
+
+Supported `ranked_by` values:
+
+```text
+operator_1
+source_priority
+queue_planner
+queue_planner_stale
+```
+
+Frontend behavior:
+
+- Legacy mode retains its current explanation and warning.
+- v2 shows Operator 5 SLA/VIP evidence.
+- v2 shows incident key, action, and blast radius.
+- Stale evidence displays an amber warning.
+- HTTP 503 leaves the previous preview visible.
+- Items are ordered by frozen `rank_position`.
+
+## Task 5: Verification and Controlled Rollout
+
+Automated tests must prove:
+
+- the new operator ID differs from the old Operator 1 ID;
+- the Queue Planner references only the new planning operator;
+- no new artifact contains `call_ai_llm`;
+- Operator 5 overrides conflicting stored SLA;
+- incomplete Operator 5 evidence fails closed;
+- major incidents move only within their SLA/VIP tier;
+- ordering is deterministic through every tie-breaker;
+- cache reuse requires the same policy fingerprint;
+- expired cache returns 503 without creating a campaign;
+- legacy and v2 modes both serialize correctly;
+- mode switching is always manual.
+
+Run:
+
+```powershell
+docker compose exec -T backend python -m pytest -q
+docker compose exec -T frontend npm run typecheck
+docker compose exec -T frontend npm run build
+```
+
+Read-only live verification:
+
+1. Hash canonical Supabase snapshots before the run.
+2. Execute the new Queue Planner once.
+3. Confirm Operator 5, Operator 6, and the new planning operator are the only workflows invoked.
+4. Confirm Supabase hashes remain identical.
+5. Confirm no Outlook or Slack message was generated.
+6. Create and discard one browser preview.
+7. Confirm no ticket execution started.
+
+Deployment:
+
+1. Apply the additive migration.
+2. Deploy with `QUEUE_PLANNER_MODE=legacy`.
+3. Import and validate both new workflows.
+4. Configure their new IDs.
+5. Switch manually to `QUEUE_PLANNER_MODE=supervity_v2`.
+6. Restart only the backend and run a preview smoke test.
+
+Rollback:
+
+1. Set `QUEUE_PLANNER_MODE=legacy`.
+2. Restart only the backend.
+3. Keep the additive database migration.
+4. Leave the new workflows imported but unused.
+5. Deploy the previous application revision only if the feature-flag rollback is insufficient.
+
+Rollback must not require editing or restoring the existing Operator 1 or execution orchestrator.

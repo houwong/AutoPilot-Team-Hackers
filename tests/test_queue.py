@@ -20,6 +20,7 @@ from app.models.command_center import (
 )
 from app.routers import queue as queue_router
 from app.services import queue as queue_service
+from app.services.queue_planner import PlannerResult, PlannerUnavailable
 
 
 @pytest.fixture()
@@ -76,6 +77,122 @@ async def test_preview_orders_priority_and_excludes_active_or_terminal(db, monke
     result = await queue_service.eligible_snapshots(db, 10)
 
     assert [item["issue_key"] for item in result] == ["ITSM-HIGH", "ITSM-LOW"]
+
+
+@pytest.mark.asyncio
+async def test_planned_snapshots_returns_v2_evidence_metadata(db, monkeypatch):
+    monkeypatch.setenv("QUEUE_PLANNER_MODE", "supervity_v2")
+
+    async def fake_select(_table, _params):
+        return [
+            {"Issue key": "ITSM-PLANNED", "Status": "Open", "Priority": "Low", "Updated": "2026-07-01"}
+        ]
+
+    async def fake_planner(_db, force_refresh: bool = False):
+        return PlannerResult(
+            tickets=[
+                {
+                    "issue_key": "ITSM-PLANNED",
+                    "priority_rank": 1,
+                    "rank_position": 1,
+                    "source_priority": "Highest",
+                    "sla_status": "Breached",
+                    "vip": True,
+                    "major_incident_key": "INC-9001",
+                    "incident_ticket_count": 24,
+                    "incident_vip_count": 3,
+                }
+            ],
+            mode="queue_planner",
+            run_id="planner-run",
+            effective_as_of="2026-07-25T00:00:00Z",
+        )
+
+    monkeypatch.setattr(queue_service.supabase, "select", fake_select)
+    monkeypatch.setattr(queue_service, "planner_result", fake_planner)
+
+    snapshots, result = await queue_service.planned_snapshots(db, 10)
+
+    assert snapshots[0]["ranked_by"] == "queue_planner"
+    assert snapshots[0]["major_incident_key"] == "INC-9001"
+    assert snapshots[0]["source_priority"] == "Low"
+    assert result.run_id == "planner-run"
+
+
+@pytest.mark.asyncio
+async def test_v2_preview_persists_planner_evidence(db, monkeypatch):
+    monkeypatch.setenv("QUEUE_PLANNER_MODE", "supervity_v2")
+
+    async def fake_planned(_db, limit, force_refresh=False):
+        return (
+            [
+                {
+                    "issue_key": "ITSM-PLANNED",
+                    "source_status": "Open",
+                    "source_priority": "Low",
+                    "source_updated_at": "2026-07-01",
+                    "sla_status": "Breached",
+                    "vip": True,
+                    "priority_rank": 1,
+                    "rank_position": 1,
+                    "ranked_by": "queue_planner",
+                    "ranking_reason": "Breached VIP; INC-9001",
+                    "major_incident_key": "INC-9001",
+                    "major_incident_action": "attach_to_existing",
+                    "incident_ticket_count": 24,
+                    "incident_vip_count": 3,
+                }
+            ],
+            PlannerResult(
+                tickets=[],
+                mode="queue_planner",
+                run_id="planner-run",
+                generated_at="2026-08-08T04:00:00Z",
+                effective_as_of="2026-07-25T00:00:00Z",
+                policy_snapshot={"as_of": "2026-07-25T00:00:00Z"},
+            ),
+        )
+
+    monkeypatch.setattr(queue_router, "planned_snapshots", fake_planned)
+
+    response = await queue_router.preview_campaign(
+        queue_router.PreviewRequest(limit=1, name="v2 preview"), db
+    )
+
+    campaign = response["campaign"]
+    item = response["items"][0]
+    assert campaign["planner_mode"] == "queue_planner"
+    assert campaign["planner_run_id"] == "planner-run"
+    assert campaign["planner_policy_snapshot"] == {"as_of": "2026-07-25T00:00:00Z"}
+    assert item["rank_position"] == 1
+    assert item["ranking_evidence"]["major_incident_key"] == "INC-9001"
+
+
+@pytest.mark.asyncio
+async def test_v2_planner_failure_preserves_existing_preview(db, monkeypatch):
+    monkeypatch.setenv("QUEUE_PLANNER_MODE", "supervity_v2")
+    current = QueueCampaign(
+        name="keep-me",
+        source="manual",
+        status=QueueCampaignStatus.PREVIEW.value,
+        batch_limit=1,
+    )
+    db.add(current)
+    db.commit()
+
+    async def fail(_db, limit, force_refresh=False):
+        raise PlannerUnavailable("Queue Planner unavailable")
+
+    monkeypatch.setattr(queue_router, "planned_snapshots", fail)
+
+    with pytest.raises(queue_router.HTTPException) as error:
+        await queue_router.preview_campaign(
+            queue_router.PreviewRequest(limit=1), db
+        )
+
+    assert error.value.status_code == 503
+    db.refresh(current)
+    assert current.status == QueueCampaignStatus.PREVIEW.value
 
 
 def test_classify_run_requires_a_recognized_terminal_step(db):
@@ -235,6 +352,50 @@ def test_campaign_counts_do_not_call_cancelled_preview_processed(db):
     counts = queue_service.campaign_counts(db, campaign)
     assert counts["cancelled"] == 1
     assert counts["processed"] == 0
+
+
+def test_campaign_payload_orders_items_by_frozen_rank_position(db):
+    campaign = QueueCampaign(
+        name="ranked",
+        source="manual",
+        status=QueueCampaignStatus.PREVIEW.value,
+        batch_limit=2,
+    )
+    db.add(campaign)
+    db.flush()
+    db.add_all(
+        [
+            QueueItem(campaign_id=campaign.id, issue_key="ITSM-SECOND", state="preview", rank_position=2),
+            QueueItem(campaign_id=campaign.id, issue_key="ITSM-FIRST", state="preview", rank_position=1),
+        ]
+    )
+    db.commit()
+
+    response = queue_router.get_campaign(campaign.id, db)
+
+    assert [item["issue_key"] for item in response["items"]] == ["ITSM-FIRST", "ITSM-SECOND"]
+
+
+def test_history_orders_queue_items_by_frozen_rank_position(db):
+    campaign = QueueCampaign(
+        name="ranked-history",
+        source="manual",
+        status=QueueCampaignStatus.COMPLETED.value,
+        batch_limit=2,
+    )
+    db.add(campaign)
+    db.flush()
+    db.add_all(
+        [
+            QueueItem(campaign_id=campaign.id, issue_key="ITSM-SECOND", state="completed_unknown", rank_position=2),
+            QueueItem(campaign_id=campaign.id, issue_key="ITSM-FIRST", state="completed_unknown", rank_position=1),
+        ]
+    )
+    db.commit()
+
+    response = queue_router.list_items(campaign_id=campaign.id, page=1, page_size=100, db=db)
+
+    assert [item["issue_key"] for item in response["items"]] == ["ITSM-FIRST", "ITSM-SECOND"]
 
 
 def test_resolved_human_run_waits_for_manual_notification(db):

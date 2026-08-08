@@ -16,11 +16,13 @@ does not contain.
 
 1. `docker compose up -d` and confirm all three services are healthy.
 2. Run the pre-flight: `docker compose exec backend python scripts/check_orchestrator.py` - expect **37/37**.
-3. Open all five pages once so Next.js has compiled them. A first-visit compile
-   pause mid-demo looks like a crash.
-4. Confirm the Workbench has the **ITSM-2180 CAB approval** item open. If it does
+3. Run `docker compose exec backend python scripts/check_queue_planner.py` and
+   expect two `PASS` lines for the validator targets.
+4. Open all five pages once. The production frontend is pre-built, but this
+   warms authentication and API requests before the demo.
+5. Confirm the Workbench has the **ITSM-2180 CAB approval** item open. If it does
    not, see "If the CAB item is missing" at the bottom.
-5. Do **not** approve or reject ITSM-2180 while rehearsing. It consumes the
+6. Do **not** approve or reject ITSM-2180 while rehearsing. It consumes the
    scenario.
 
 ---
@@ -175,10 +177,11 @@ Point at each:
 
 Click **Preview next 10**.
 
-> "Preview touches nothing - no Supervity run, no Supabase write. And look at the
-> order: it is not the stored Priority column. Operator 1 ranks on **SLA state
-> and VIP**, so a **Low** priority ticket that has already breached for a VIP
-> outranks a **Highest** one still comfortably within target."
+> "Preview runs a separate, read-only Queue Planner. Operator 5 recomputes the
+> business-hours SLA, Operator 6 adds incident context, and a new deterministic
+> planning operator ranks the result. No ticket execution, Supabase write or
+> notification starts until I confirm. That is why a **Low** priority ticket
+> already breached for a VIP can outrank a **Highest** one still within target."
 
 > "Confirm freezes that exact batch, so a later backlog refresh cannot silently
 > swap the tickets out from under a decision someone already reviewed. Then one
@@ -209,8 +212,9 @@ Point down the trace:
 > 140 seconds each. The other 58% reached a person with the evidence to decide -
 > which is the point, not a shortfall."
 
-> "Seven operators, one orchestrator, five live integrations, 21 policies a
-> business owns, and every decision traceable back to the rule that caused it."
+> "Seven execution operators, three read-only planning workflows, one execution
+> orchestrator, five live integrations, 21 policies a business owns, and every
+> decision traceable back to the rule that caused it."
 
 ---
 
