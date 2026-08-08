@@ -37,6 +37,44 @@ function stateClass(state: string) {
   return 'bg-slate-500/10 text-slate-700'
 }
 
+/**
+ * Did the service-desk ticket actually change?
+ *
+ * `state` says which path the agent took; this says whether Supabase agrees. A
+ * campaign once reported ITSM-2003 as `human_approved` while the ticket still
+ * read "Waiting for support" with nothing written — the run had genuinely
+ * completed its notification branch, and no screen showed the difference.
+ *
+ * `not_applicable` is deliberately neutral rather than green: nothing was
+ * written because nothing should have been, which is a correct outcome but not
+ * the same claim as "we changed the ticket".
+ */
+function VerificationBadge({ item }: { item: QueueItem }) {
+  if (!item.verification) return null
+  const styles: Record<string, string> = {
+    verified: 'bg-emerald-500/10 text-emerald-700',
+    verification_failed: 'bg-red-500/10 text-red-700',
+    not_applicable: 'bg-slate-500/10 text-slate-600',
+    unknown: 'bg-amber-500/10 text-amber-700',
+  }
+  const labels: Record<string, string> = {
+    verified: 'Ticket verified',
+    verification_failed: 'Ticket did NOT change',
+    not_applicable: 'No ticket change expected',
+    unknown: 'Not verified',
+  }
+  return (
+    <span
+      className={`mt-1 inline-block rounded-full px-2 py-0.5 text-[11px] font-medium ${
+        styles[item.verification] ?? styles.unknown
+      }`}
+      title={item.verification_detail?.reason ?? undefined}
+    >
+      {labels[item.verification] ?? item.verification}
+    </span>
+  )
+}
+
 function Counter({ label, value }: { label: string; value: number }) {
   return (
     <div className='rounded-lg border bg-background/60 p-3'>
@@ -158,7 +196,28 @@ export default function ProcessedTicketsPage() {
           <CardHeader><CardTitle className='text-base'>Preview — confirmation required</CardTitle></CardHeader>
           <CardContent>
             <p className='mb-3 text-sm text-muted-foreground'>No Supervity run has started. Confirming this list will process these exact tickets and may update live Supabase records.</p>
-            <div className='flex flex-wrap gap-2'>{preview.items.map((item) => <span key={item.issue_key} className='rounded-md border bg-background px-2 py-1 font-mono text-xs'>{item.issue_key}</span>)}</div>
+            {/* Show the order's justification, not just the keys. The batch is
+                ranked on SLA state and VIP by Operator 1, which routinely puts a
+                Low-priority breached ticket above a Highest one still within
+                target — that looks wrong until you can see why. */}
+            <ol className='space-y-1'>
+              {preview.items.map((item, i) => (
+                <li key={item.issue_key} className='flex flex-wrap items-baseline gap-2 text-xs'>
+                  <span className='w-5 tabular-nums text-muted-foreground'>{i + 1}.</span>
+                  <span className='rounded-md border bg-background px-2 py-1 font-mono'>{item.issue_key}</span>
+                  <span className='text-muted-foreground'>stored {item.source_priority ?? 'unknown'}</span>
+                  {item.ranking_reason && (
+                    <span className='text-brand-cornflower'>— {item.ranking_reason}</span>
+                  )}
+                </li>
+              ))}
+            </ol>
+            {preview.items.some((i) => i.ranked_by === 'source_priority') && (
+              <p className='mt-2 text-xs text-amber-700'>
+                Operator 1 was unreachable, so this batch is ordered by the stored
+                Priority column rather than by SLA state.
+              </p>
+            )}
             {preview.items.length === 0 && <p className='text-sm text-muted-foreground'>No eligible tickets were found.</p>}
             <Button variant='ghost' className='mt-3' onClick={() => setPreview(null)}>Discard preview</Button>
           </CardContent>
@@ -177,8 +236,15 @@ export default function ProcessedTicketsPage() {
               <tbody>
                 {items.map((item) => <tr key={item.id} className='border-b last:border-0'>
                   <td className='px-5 py-3 font-mono font-semibold'>{item.issue_key}</td>
-                  <td className='px-5 py-3 text-xs text-muted-foreground'>{item.source_priority ?? 'unknown'} · {item.source_status ?? 'unknown'}</td>
-                  <td className='px-5 py-3'><span className={`rounded-full px-2 py-1 text-xs font-medium ${stateClass(item.state)}`}>{humanise(item.state)}</span>{item.last_error && <p className='mt-1 max-w-xs text-xs text-red-600'>{item.last_error}</p>}</td>
+                  <td className='px-5 py-3 text-xs text-muted-foreground'>
+                    {item.source_priority ?? 'unknown'} · {item.source_status ?? 'unknown'}
+                    {/* Why it was ranked here — the stored Priority above is
+                        deliberately not what decided the order. */}
+                    {item.ranking_reason && (
+                      <p className='mt-1 text-[11px] text-brand-cornflower'>{item.ranking_reason}</p>
+                    )}
+                  </td>
+                  <td className='px-5 py-3'><span className={`rounded-full px-2 py-1 text-xs font-medium ${stateClass(item.state)}`}>{humanise(item.state)}</span><br /><VerificationBadge item={item} />{item.last_error && <p className='mt-1 max-w-xs text-xs text-red-600'>{item.last_error}</p>}</td>
                   <td className='px-5 py-3 tabular-nums'>{item.attempt_count}</td>
                   <td className='px-5 py-3'>{item.latest_run_id ? <span className='font-mono text-xs text-brand-cornflower' title={item.latest_run_id}>{item.latest_run_id.slice(0, 8)}</span> : '—'}</td>
                   <td className='px-5 py-3 text-xs text-muted-foreground'>{item.completed_at ? relativeTime(item.completed_at) : '—'}</td>
