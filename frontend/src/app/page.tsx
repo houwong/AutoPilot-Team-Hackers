@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { motion, useInView } from 'framer-motion'
 
+import { RunTrace } from '@/components/agent/RunTrace'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { CardWatermark } from '@/components/ui/card-watermark'
@@ -217,6 +218,10 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null)
   const [triggering, setTriggering] = useState(false)
   const [target, setTarget] = useState('')
+  // The run currently being watched step by step. Set on trigger; the trace
+  // keeps polling until the run settles and then stays on screen, because the
+  // finished sequence is the thing worth reading.
+  const [watching, setWatching] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -248,10 +253,14 @@ export default function DashboardPage() {
       // Blank means "take the top of the queue"; a key runs that specific
       // ticket. The brief warns to expect a judge asking for a case you did
       // not rehearse, so this has to be reachable from the UI.
-      await agent.trigger({
+      const run = await agent.trigger({
         trigger: 'manual',
         target_issue_key: target.trim() || undefined,
       })
+      // Watch this one. A run takes about two minutes and the operator steps
+      // are persisted as they arrive, so there is no reason to show nothing
+      // while the agent is working.
+      setWatching(run.run_id)
       await refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not start a run')
@@ -331,6 +340,14 @@ export default function DashboardPage() {
         <Card className='border-red-500/30 bg-red-500/5'>
           <CardContent className='p-4 text-sm text-red-600'>{error}</CardContent>
         </Card>
+      )}
+
+      {/* The run, while it happens. Appears on trigger, stays after it settles:
+          the finished sequence is what a reader wants, not just the live one. */}
+      {watching && (
+        <motion.div variants={itemVariants}>
+          <RunTrace runId={watching} onSettled={refresh} />
+        </motion.div>
       )}
 
       <div className='grid grid-cols-2 gap-4 lg:grid-cols-4'>
