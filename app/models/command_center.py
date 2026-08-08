@@ -211,6 +211,25 @@ class QueueItem(Base):
     started_at = Column(DateTime(timezone=True))
     completed_at = Column(DateTime(timezone=True))
 
+    # Did the service-desk row actually change? A completed workflow path proves
+    # the agent ran, not that the ticket moved, and the two have disagreed —
+    # a campaign reported ITSM-2003 as human_approved while Supabase still had
+    # it Waiting for support with no resolution. `verification` records the
+    # answer to the second question separately from `outcome`.
+    verification = Column(String(32), index=True)
+    verification_detail = Column(JSON)
+    verified_at = Column(DateTime(timezone=True))
+
+    # Why this ticket sits where it does in the batch. Frozen with the item so
+    # the order stays explainable after the fact, even once the live SLA state
+    # has moved on — a reviewer approving a batch should be able to see what it
+    # was ranked on at the time they approved it.
+    sla_status = Column(String(32))
+    vip = Column(Boolean)
+    priority_rank = Column(Integer)
+    ranked_by = Column(String(32))
+    ranking_reason = Column(Text)
+
     campaign = relationship("QueueCampaign", back_populates="items")
 
 
