@@ -361,24 +361,62 @@ export default function DashboardPage() {
           value={w?.open ?? 0}
           icon={Icons.inbox}
           note={w?.avg_review_ms ? `${Math.round(w.avg_review_ms / 60000)}m avg review` : 'queue clear'}
-          colorClass='bg-gradient-to-br from-amber-500 to-orange-500'
+          colorClass='bg-amber-500'
           tone={(w?.open ?? 0) > 0 ? 'alert' : undefined}
         />
       </div>
 
+      {/* The queue, given room.
+          This was a thin strip below the stat row, easy to scroll past — and it
+          is the newest capability the build has. When a batch is running it now
+          shows the same progress bar the Processed page uses, so the two
+          surfaces agree at a glance and the dashboard answers "is it working
+          through the backlog right now" without a click. */}
       <motion.div variants={itemVariants}>
-        <Card>
-          <CardContent className='flex flex-wrap items-center justify-between gap-4 p-5'>
-            <div>
-              <p className='text-micro uppercase text-brand-muted'>Ticket queue</p>
-              <p className='mt-1 text-base font-semibold text-brand-navy'>
-                {activeQueue ? `${activeQueue.counts.processed ?? 0} of ${activeQueue.counts.total ?? 0} tickets completed` : 'No active ticket batch'}
-              </p>
-              <p className='mt-1 text-xs text-muted-foreground'>
-                {activeQueue ? `${activeQueue.counts.pending ?? 0} pending · ${activeQueue.counts.awaiting_human ?? 0} awaiting human` : 'Preview a batch before the scheduler starts it.'}
-              </p>
+        <Card className={activeQueue ? 'border-brand-cornflower/40' : undefined}>
+          <CardContent className='p-5'>
+            <div className='flex flex-wrap items-center justify-between gap-4'>
+              <div>
+                <p className='text-base font-semibold text-brand-navy'>
+                  {activeQueue
+                    ? `Working through a batch of ${activeQueue.counts.total ?? 0}`
+                    : 'No batch running'}
+                </p>
+                <p className='mt-1 text-sm text-muted-foreground'>
+                  {activeQueue
+                    ? `${activeQueue.counts.processed ?? 0} done · ${activeQueue.counts.pending ?? 0} queued · ${activeQueue.counts.awaiting_human ?? 0} waiting on a person`
+                    : 'Tickets are ranked by SLA state, not stored priority. Nothing runs until a batch is confirmed.'}
+                </p>
+              </div>
+              <Link href='/processed'>
+                <Button variant={activeQueue ? 'default' : 'outline'}>
+                  {activeQueue ? 'Open the queue' : 'Preview a batch'}
+                </Button>
+              </Link>
             </div>
-            <Link href='/processed'><Button variant='outline'>Open processed history</Button></Link>
+
+            {activeQueue && (activeQueue.counts.total ?? 0) > 0 && (
+              <div className='mt-4 flex h-2 w-full overflow-hidden rounded-full bg-muted'>
+                {(activeQueue.counts.processed ?? 0) > 0 && (
+                  <div
+                    className='bg-emerald-500'
+                    style={{ width: `${((activeQueue.counts.processed ?? 0) / (activeQueue.counts.total ?? 1)) * 100}%` }}
+                  />
+                )}
+                {(activeQueue.counts.running ?? 0) > 0 && (
+                  <div
+                    className='bg-brand-cornflower'
+                    style={{ width: `${((activeQueue.counts.running ?? 0) / (activeQueue.counts.total ?? 1)) * 100}%` }}
+                  />
+                )}
+                {(activeQueue.counts.awaiting_human ?? 0) > 0 && (
+                  <div
+                    className='bg-amber-500'
+                    style={{ width: `${((activeQueue.counts.awaiting_human ?? 0) / (activeQueue.counts.total ?? 1)) * 100}%` }}
+                  />
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
       </motion.div>
