@@ -29,6 +29,7 @@ from ..services.queue import (
     claim_next,
     classify_run,
     eligible_snapshots,
+    reconcile_campaign,
     item_payload,
     synchronize_campaign,
 )
@@ -157,6 +158,12 @@ async def preview_campaign(body: PreviewRequest, db: Session = Depends(get_db)):
                 source_updated_at=snapshot["source_updated_at"],
                 state=QueueItemState.PREVIEW.value,
                 attempt_count=0,
+                # Freeze why it was ranked here, alongside the frozen batch.
+                sla_status=snapshot.get("sla_status"),
+                vip=snapshot.get("vip"),
+                priority_rank=snapshot.get("priority_rank"),
+                ranked_by=snapshot.get("ranked_by"),
+                ranking_reason=snapshot.get("ranking_reason"),
             )
         )
     db.commit()
@@ -194,11 +201,15 @@ async def confirm_campaign(
 
 
 @router.get("/campaigns/active")
-def get_active_campaign(db: Session = Depends(get_db)):
+async def get_active_campaign(db: Session = Depends(get_db)):
     campaign = active_campaign(db)
     if not campaign:
         return {"campaign": None}
     synchronize_campaign(db, campaign)
+    # Also verify here, not only on tick: a demo may never tick, and a reviewer
+    # opening the page should not be shown "auto_remediated" for a ticket whose
+    # row never changed.
+    await reconcile_campaign(db, campaign)
     db.refresh(campaign)
     return {"campaign": campaign_payload(db, campaign)}
 
@@ -277,6 +288,11 @@ async def tick(
     if campaign is None:
         return {"started": False, "reason": "no_running_campaign"}
     result = await _tick_campaign(db, background, campaign)
+    # Verify write-path outcomes here rather than inside synchronize_campaign:
+    # this needs a Supabase read, and synchronize runs from synchronous request
+    # paths. The tick is the natural place — it is the recurring heartbeat, so
+    # every finished item gets checked without anyone having to open a page.
+    await reconcile_campaign(db, campaign)
     return {"campaign": campaign_payload(db, campaign), "tick": result}
 
 

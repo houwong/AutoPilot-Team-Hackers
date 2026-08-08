@@ -8,6 +8,7 @@ and starts one explicit-target run at a time.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -26,7 +27,14 @@ from ..models.command_center import (
     RunStatus,
 )
 from . import supabase
+from .auto_client import AutoClient, AutoError
 from .operator_steps import DONE_STEP_STATUSES, canonical_step_map
+from .queue_planner import rank_index, ranked_backlog, ranking_reason
+from .reconciliation import VERIFICATION_FAILED, verify_ticket
+
+# A delegating step's stored output holds only a link to the operator's own run;
+# the structured result has to be fetched from there.
+_SUB_RUN_RE = re.compile(r"/runs/([0-9a-f-]{20,})", re.I)
 
 log = logging.getLogger(__name__)
 
@@ -84,12 +92,21 @@ def _snapshot(row: dict[str, Any]) -> dict[str, Any] | None:
 async def eligible_snapshots(db: Session, limit: int = 10) -> list[dict[str, Any]]:
     """Read and rank eligible tickets without changing Supabase."""
     limit = max(1, min(int(limit), 100))
+
+    # Fetch enough of the backlog to rank meaningfully.
+    #
+    # This used to read `limit * 5` rows — fifteen for a batch of three — and
+    # sort those. Ranking an arbitrary page is not ranking: whichever rows
+    # PostgREST happened to return first became the candidates, so the top of
+    # the queue was decided by storage order rather than by SLA. Read the whole
+    # open backlog instead; it is a few hundred rows of five columns, and the
+    # ordering is the entire point of the step.
     rows = await supabase.select(
         "issues",
         {
             "select": '"Issue key","Status","Priority","Updated",row_id',
             '"Status"': "in.(Open,In Progress,Waiting for support,Waiting for customer)",
-            "limit": str(max(limit * 5, limit)),
+            "limit": "1000",
         },
     )
     candidates = [s for row in rows if (s := _snapshot(row))]
@@ -150,14 +167,40 @@ async def eligible_snapshots(db: Session, limit: int = 10) -> list[dict[str, Any
     }
     excluded = historical | active_queue | active_run_keys | terminal_run_keys | open_exceptions
 
-    def sort_key(item: dict[str, Any]) -> tuple[int, str, str]:
-        priority = PRIORITY_ORDER.get(item["source_priority"].strip().lower(), 9)
-        return (priority, item["source_updated_at"] or "9999-12-31", item["issue_key"])
+    # Order by Operator 1's SLA-aware ranking, not the stored Priority column.
+    #
+    # Sorting on Priority answers the wrong question: a Low ticket whose SLA has
+    # already breached for a VIP outranks a Highest ticket sitting comfortably
+    # within target, and the stored field puts them the wrong way round.
+    # Operator 1 ranks on (SLA status, VIP), which is the order the queue
+    # planning note asks for, and asking it keeps the preview traceable to
+    # operator evidence rather than to a constant in this file.
+    ranking = rank_index(await ranked_backlog(db))
+
+    def sort_key(item: dict[str, Any]) -> tuple[int, int, str, str]:
+        evidence = ranking.get(item["issue_key"])
+        # Unranked tickets sort after ranked ones rather than being dropped:
+        # Operator 1 filters out records it considers ineligible, and silently
+        # losing them here would hide work rather than defer it.
+        if evidence is None:
+            return (
+                1,
+                PRIORITY_ORDER.get(item["source_priority"].strip().lower(), 9),
+                item["source_updated_at"] or "9999-12-31",
+                item["issue_key"],
+            )
+        return (0, int(evidence["position"]), "", item["issue_key"])
 
     result: list[dict[str, Any]] = []
     for item in sorted(candidates, key=sort_key):
         if item["issue_key"] in excluded:
             continue
+        evidence = ranking.get(item["issue_key"])
+        item["sla_status"] = (evidence or {}).get("sla_status")
+        item["vip"] = (evidence or {}).get("vip")
+        item["priority_rank"] = (evidence or {}).get("priority_rank")
+        item["ranked_by"] = "operator_1" if evidence else "source_priority"
+        item["ranking_reason"] = ranking_reason(evidence)
         result.append(item)
         if len(result) >= limit:
             break
@@ -210,6 +253,18 @@ def item_payload(item: QueueItem) -> dict[str, Any]:
         "created_at": item.created_at,
         "started_at": item.started_at,
         "completed_at": item.completed_at,
+        # `outcome` says which path the agent took; `verification` says whether
+        # the ticket actually changed. Kept separate on purpose — reporting one
+        # as the other is what let a campaign call ITSM-2003 human_approved
+        # while Supabase still had it untouched.
+        "verification": item.verification,
+        "verification_detail": item.verification_detail,
+        "verified_at": item.verified_at,
+        "sla_status": item.sla_status,
+        "vip": item.vip,
+        "priority_rank": item.priority_rank,
+        "ranked_by": item.ranked_by,
+        "ranking_reason": item.ranking_reason,
     }
 
 
@@ -353,6 +408,107 @@ def synchronize_campaign(db: Session, campaign: QueueCampaign) -> None:
         campaign.status = QueueCampaignStatus.COMPLETED.value
         campaign.completed_at = campaign.completed_at or _now()
     db.commit()
+
+
+async def reconcile_campaign(db: Session, campaign: QueueCampaign) -> int:
+    """
+    Check that tickets the queue calls remediated actually changed.
+
+    `synchronize_campaign` decides an outcome from the workflow path: it sees
+    step_6_notif_auto complete and records `auto_remediated`. That is evidence
+    the orchestrator finished a branch, not that the service desk moved. The two
+    have disagreed — a campaign reported ITSM-2003 as `human_approved` while
+    Supabase still held it at "Waiting for support" with no resolution, because
+    the ticket had no knowledge-base article and Operator 3 had correctly
+    declined to act.
+
+    So a write-path outcome is re-read from Supabase and compared against the
+    `expected_state` Operator 3 reported. The result is recorded beside the
+    outcome rather than replacing it: `outcome` stays the answer to "which path
+    did the agent take", and `verification` answers "did the ticket change".
+    Collapsing those into one word is what produced the discrepancy.
+
+    Runs separately from synchronize_campaign because it needs network I/O, and
+    that function is called from synchronous request paths. Returns the number
+    of items verified so callers can log it.
+
+    Deliberately does not retry or repair. Its whole job is to notice, and a
+    mismatch surfaces as `verification_failed` for a person to look at.
+    """
+    items = (
+        db.query(QueueItem)
+        .filter(
+            QueueItem.campaign_id == campaign.id,
+            QueueItem.verification.is_(None),
+            QueueItem.state.in_([
+                QueueItemState.AUTO_REMEDIATED.value,
+                QueueItemState.HUMAN_APPROVED.value,
+            ]),
+        )
+        .all()
+    )
+    if not items:
+        return 0
+
+    client = AutoClient()
+    checked = 0
+    for item in items:
+        remediation: dict = {}
+        run = (
+            db.query(AgentRun).filter(AgentRun.run_id == item.latest_run_id).first()
+            if item.latest_run_id
+            else None
+        )
+        if run:
+            by_step = canonical_step_map(
+                db.query(OperatorExecution)
+                .filter(OperatorExecution.agent_run_id == run.id)
+                .all()
+            )
+            # Prefer the executing step: step_5_exec runs after an approval and
+            # carries the state that was actually written, where step_3_rem may
+            # only hold the pre-approval recommendation.
+            for step_id in ("step_5_exec", "step_3_rem"):
+                row = by_step.get(step_id)
+                if row is None:
+                    continue
+                try:
+                    result = await _remediation_result(client, row)
+                except AutoError as exc:
+                    log.warning("could not read %s for verification: %s", step_id, exc)
+                    continue
+                if result:
+                    remediation = result
+                    break
+
+        result, detail = await verify_ticket(item.issue_key, remediation)
+        item.verification = result
+        item.verification_detail = detail
+        item.verified_at = _now()
+        checked += 1
+        if result == VERIFICATION_FAILED:
+            log.error(
+                "queue item %s (%s) reported %s but Supabase disagrees: %s",
+                item.id,
+                item.issue_key,
+                item.state,
+                detail.get("reason"),
+            )
+    db.commit()
+    return checked
+
+
+async def _remediation_result(client: AutoClient, row: OperatorExecution) -> dict:
+    """Operator 3's structured result for one recorded step, via its sub-run."""
+    output = row.output if isinstance(row.output, dict) else {}
+    inner = output.get("operator_result")
+    if isinstance(inner, dict) and inner:
+        return inner
+    html = ((output.get("displayData") or {}).get("html")) or ""
+    match = _SUB_RUN_RE.search(html)
+    if not match:
+        return {}
+    return await client.get_step_result(match.group(1))
 
 
 def claim_next(db: Session, campaign_id: int) -> QueueItem | None:
