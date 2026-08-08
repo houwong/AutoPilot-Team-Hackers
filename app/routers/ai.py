@@ -399,12 +399,70 @@ async def _backlog(msg: str, db: Session) -> Optional[tuple[str, list[ToolCall]]
 
 
 def _greeting(msg: str, db: Session) -> Optional[tuple[str, list[ToolCall]]]:
-    """A greeting should be met with an offer, not a refusal."""
-    if not re.fullmatch(r"\s*(hi|hey|hello|yo|good (morning|afternoon|evening))\W*",
-                        msg, re.I):
+    """
+    A greeting gets a short offer, not the full capability list.
+
+    Two things were wrong here. `fullmatch` meant "hi there" and "hiya" were
+    refused while "hi" was welcomed, which is the kind of brittleness that makes
+    a chat feel broken. And answering a one-word hello with the entire
+    capabilities dump is a wall of text: the right reply to "hi" is a sentence
+    and a couple of concrete things to try.
+
+    Matched at the start of the message rather than across the whole of it, so a
+    greeting that carries a real question ("hi, why did ITSM-2180 escalate")
+    falls through to the route that can answer it.
+    """
+    if not re.match(
+        r"\s*(hi|hii+|hiya|hey+|hello|yo|sup|howdy|greetings|"
+        r"good (morning|afternoon|evening))\b"
+        # "hi there" and "hey team" are still just a greeting. Allowing the
+        # trailing address matters more than it looks: refusing "hi there" while
+        # welcoming "hi" is exactly the brittleness that makes a chat feel
+        # broken on the first message anyone types.
+        r"(\s+(there|team|folks|all|again))?[\s!.,]*$",
+        msg,
+        re.I,
+    ):
         return None
-    answer, calls = _capabilities(msg, db)
-    return answer, calls
+
+    open_items = (
+        db.query(ExceptionItem)
+        .filter(ExceptionItem.status == ExceptionStatus.OPEN.value)
+        .count()
+    )
+    opener = (
+        f"There {'is' if open_items == 1 else 'are'} **{open_items}** "
+        f"item{'' if open_items == 1 else 's'} waiting for a decision."
+        if open_items
+        else "Nothing is waiting for a human right now."
+    )
+    return (
+        f"{opener} I can answer from the agent's own records — runs, operator "
+        f"steps, Workbench items, policies.\n\n"
+        f"Try:\n"
+        f"- *what needs review?*\n"
+        f"- *why did ITSM-2180 escalate?*\n"
+        f"- *run ITSM-2005*",
+        [_tool("read_workbench", {"status": "open"}, {"count": open_items})],
+    )
+
+
+def _pleasantry(msg: str, _db: Session) -> Optional[tuple[str, list[ToolCall]]]:
+    """
+    Acknowledge a closer instead of refusing it.
+
+    "thanks" and "ok" are not questions, and answering them with "I could not
+    match that to anything I can read" makes the panel feel like it is scolding
+    the user for being polite.
+    """
+    if not re.match(
+        r"\s*(thanks?|thank you|ty|ok|okay|k|cool|nice|got it|great|perfect|"
+        r"cheers|bye)\b[\s!.,]*$",
+        msg,
+        re.I,
+    ):
+        return None
+    return "Any time. Ask whenever you need the records checked.", []
 
 
 def _capabilities(_msg: str, _db: Session) -> tuple[str, list[ToolCall]]:
@@ -521,6 +579,7 @@ def _asking_what_i_do(msg: str, db: Session) -> Optional[tuple[str, list[ToolCal
 # run statistics instead.
 ROUTES = (
     _greeting,
+    _pleasantry,
     _trigger_run,
     _explain_ticket,
     _asking_what_i_do,
