@@ -181,18 +181,17 @@ async def _eligible_snapshots_from_ranking(
     }
     excluded = historical | active_queue | active_run_keys | terminal_run_keys | open_exceptions
 
-    # Order by Operator 1's SLA-aware ranking, not the stored Priority column.
+    # Order by the selected planner's SLA-aware ranking, not stored Priority.
     #
     # Sorting on Priority answers the wrong question: a Low ticket whose SLA has
     # already breached for a VIP outranks a Highest ticket sitting comfortably
     # within target, and the stored field puts them the wrong way round.
-    # Operator 1 ranks on (SLA status, VIP), which is the order the queue
-    # planning note asks for, and asking it keeps the preview traceable to
-    # operator evidence rather than to a constant in this file.
+    # The v2 Queue Planner ranks from Operator 5/6 evidence; legacy mode retains
+    # Operator 1. Both keep the preview traceable to frozen operator evidence.
     def sort_key(item: dict[str, Any]) -> tuple[int, int, str, str]:
         evidence = ranking.get(item["issue_key"])
         # Unranked tickets sort after ranked ones rather than being dropped:
-        # Operator 1 filters out records it considers ineligible, and silently
+        # A planner can filter out records it considers ineligible, and silently
         # losing them here would hide work rather than defer it.
         if evidence is None:
             return (

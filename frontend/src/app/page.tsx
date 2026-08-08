@@ -402,7 +402,7 @@ export default function DashboardPage() {
                 <p className='mt-1 text-sm text-muted-foreground'>
                   {activeQueue
                     ? `${activeQueue.counts.processed ?? 0} done · ${activeQueue.counts.pending ?? 0} queued · ${activeQueue.counts.awaiting_human ?? 0} waiting on a person`
-                    : 'Tickets are ranked by SLA state, not stored priority. Nothing runs until a batch is confirmed.'}
+                    : 'The read-only Queue Planner ranks tickets by SLA evidence, not stored priority. Ticket execution waits until a batch is confirmed.'}
                 </p>
               </div>
               <Link href='/processed'>

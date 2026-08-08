@@ -9,24 +9,20 @@ Medium, Low. That is the wrong question. A `Low` ticket whose SLA has already
 breached for a VIP matters more than a `Highest` ticket sitting comfortably
 within target, and sorting by the stored field puts them the wrong way round.
 
-Operator 1 already computes the right order. Its `step_3_prioritize_and_report`
-ranks on (SLA status, VIP):
+The deterministic planning operator computes the order from Operator 5's
+business-hours SLA evidence and Operator 6's incident context. Its primary
+tiers are (SLA status, VIP):
 
     (Breached, VIP)    1        (At risk, VIP)    3        (Within SLA, VIP)    5
     (Breached, other)  2        (At risk, other)  4        (Within SLA, other)  6
 
-which is exactly the order the queue planning note asks for. So the planner does
-not reimplement ranking — it asks the operator that owns triage, which also
-means the preview order is traceable to operator evidence rather than to a
-constant in our code.
+which is exactly the order the queue planning note asks for. The preview remains
+traceable to frozen operator evidence rather than to the stored Priority field.
 
-The v2 workflow is read-only and stops after ranking. The existing Operator 1 path is
-safe only as an explicit legacy rollback and is never selected automatically.
-Operator 1 is safe to call for planning: all three of its steps are read-only,
-it writes nothing to Supabase and sends no notification, and calling the
-workflow directly stops after ranking rather than continuing into diagnosis and
-remediation the way the orchestrator does. No new Auto workflow is needed for
-this legacy path; the new Queue Planner workflow is the v2 planning boundary.
+The v2 workflow is read-only and stops after ranking. It uses only the new
+planning workflows and never delegates to the old Operator 1. The existing
+Operator 1 path remains available only as an explicit legacy rollback and is
+never selected automatically.
 
 The cost is latency — it fetches and enriches the whole backlog, taking a minute
 or more — so the ranking is cached briefly. A preview is a planning action taken

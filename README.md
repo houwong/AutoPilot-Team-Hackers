@@ -48,6 +48,37 @@ copy .env.example .env
 
 > The default `.env` works out of the box — `AUTH_BYPASS=true` means no external auth setup needed. The app starts with a "Dev User" session automatically.
 
+### Enable the Queue Planner for the demo
+
+The repository keeps the original queue path available for rollback. After
+adding the private Supervity and Supabase credentials to `.env`, use these
+non-secret settings for the Section 4.1 demo:
+
+```env
+QUEUE_PLANNER_MODE=supervity_v2
+FRONTEND_TARGET=prod
+FRONTEND_NODE_ENV=production
+```
+
+The three Queue Planner workflow IDs are already documented in `.env.example`.
+Do not commit `AUTO_API_KEY`, Supabase keys, `NEXTAUTH_SECRET`, or the completed
+`.env` file.
+
+The seeded hackathon dataset is anchored to `2026-07-25T00:00:00Z`. Keep the
+`as_of` policy at that value for the recorded demo so breached, at-risk, and
+within-SLA tickets remain comparable. The policy seeder supplies that value on a
+fresh database:
+
+```bash
+docker compose exec backend python scripts/seed_policies.py
+```
+
+The seeder intentionally preserves administrator-edited values. On an existing
+installation, restore `as_of` from the Policies page before recording the demo.
+
+To roll back Queue Planner 4.1 without changing any workflow, set
+`QUEUE_PLANNER_MODE=legacy` and recreate the backend container.
+
 ### Step 3: Start Docker Desktop
 
 1. Open **Docker Desktop** from your Applications (Mac) or Start Menu (Windows)

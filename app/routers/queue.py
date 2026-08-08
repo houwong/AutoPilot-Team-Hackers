@@ -206,7 +206,10 @@ async def preview_campaign(body: PreviewRequest, db: Session = Depends(get_db)):
     return {
         "campaign": campaign_payload(db, campaign),
         "items": [item_payload(item) for item in ordered_campaign_items(campaign)],
-        "warning": "Preview only; no Supervity run or Supabase write has started.",
+        "warning": (
+            "Preview only; the read-only Queue Planner ran, but ticket execution "
+            "has not started and Supabase has not been updated."
+        ),
     }
 
 

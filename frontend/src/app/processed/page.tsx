@@ -143,7 +143,7 @@ export default function ProcessedTicketsPage() {
         <div>
           <h1 className='text-display-3 font-bold tracking-tight text-brand-navy'>Processed Tickets</h1>
           <p className='mt-2 max-w-xl text-muted-foreground'>
-            One ticket at a time. Nothing runs until you confirm the batch.
+            One ticket at a time. Preview plans read-only; execution waits for confirmation.
           </p>
         </div>
         <Link href='/'><Button variant='outline'>Back to Dashboard</Button></Link>
@@ -219,8 +219,9 @@ export default function ProcessedTicketsPage() {
           </>
         ) : (
           <p className='mt-3 max-w-xl text-sm text-muted-foreground'>
-            Preview builds a batch ranked by SLA state, not stored priority. Nothing
-            is sent to Supervity and nothing is written until you confirm it.
+            Preview runs the read-only Queue Planner and ranks by recomputed SLA
+            evidence, not stored priority. Ticket execution and Supabase writes wait
+            for confirmation.
           </p>
         )}
 
@@ -247,7 +248,7 @@ export default function ProcessedTicketsPage() {
         <Card className='border-brand-cornflower/40 bg-brand-cornflower/5'>
           <CardHeader><CardTitle className='text-base'>Preview — confirmation required</CardTitle></CardHeader>
           <CardContent>
-            <p className='mb-3 text-sm text-muted-foreground'>No Supervity run has started. Confirming this list will process these exact tickets and may update live Supabase records.</p>
+            <p className='mb-3 text-sm text-muted-foreground'>The read-only Queue Planner produced this list. No ticket execution, Supabase write, or notification has started. Confirming will process these exact tickets and may update live Supabase records.</p>
             {preview.campaign.planner_stale && (
               <p className='mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800'>This preview uses a stale Queue Planner result. Confirm only if the frozen evidence is still acceptable.</p>
             )}
