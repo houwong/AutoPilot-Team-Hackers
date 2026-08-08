@@ -47,14 +47,13 @@ class RequeueRequest(BaseModel):
 
 
 def _active_run_item(db: Session, campaign_id: int) -> QueueItem | None:
+    # Human Review parks only its own ticket. A different pending ticket may
+    # continue, while create_agent_run still prevents same-key duplicates.
     return (
         db.query(QueueItem)
         .filter(
             QueueItem.campaign_id == campaign_id,
-            QueueItem.state.in_([
-                QueueItemState.RUNNING.value,
-                QueueItemState.AWAITING_HUMAN.value,
-            ]),
+            QueueItem.state == QueueItemState.RUNNING.value,
         )
         .order_by(QueueItem.id)
         .first()
@@ -291,6 +290,24 @@ def list_items(
     page_size: int = Query(25, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
+    # Keep the history endpoint authoritative on its own.  The Processed
+    # Tickets page loads the active campaign and the item history in parallel;
+    # relying on the campaign request to synchronize first made the serialized
+    # item state race the two requests and briefly left a resolved review shown
+    # as ``awaiting_human``.  Synchronize the relevant campaign before reading
+    # queue rows so every caller sees the persisted terminal outcome.
+    campaign = (
+        db.query(QueueCampaign).filter(QueueCampaign.id == campaign_id).first()
+        if campaign_id
+        else active_campaign(db)
+    )
+    if campaign and campaign.status in {
+        QueueCampaignStatus.PREVIEW.value,
+        QueueCampaignStatus.RUNNING.value,
+        QueueCampaignStatus.PAUSED.value,
+    }:
+        synchronize_campaign(db, campaign)
+
     requested_state = state
     query = db.query(QueueItem)
     if requested_state:

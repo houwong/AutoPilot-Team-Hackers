@@ -46,6 +46,11 @@ approving or rejecting it in Workbench updates the same history entry.
 Terminal tickets are excluded from future previews. Use **Requeue** with a
 reason only when an administrator intentionally wants to process one again.
 
+A ticket in `awaiting_human` remains parked and cannot be started again, but it
+does not block a different `pending` ticket in the same campaign. The scheduler
+continues to start at most one new analysis run per tick. The campaign completes
+only after every parked review and pending ticket reaches a terminal outcome.
+
 ## Verification
 
 Run these checks before a demo:
