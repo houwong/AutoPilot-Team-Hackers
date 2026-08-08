@@ -196,12 +196,16 @@ export function ChatMessage({ message, userName, userImage }: ChatMessageProps) 
         >
           {isLoading ? (
             <div className="flex items-center gap-2 py-1">
+              {/* Fade, not bounce. Bounce easing overshoots and settles like a
+                  rubber ball — playful, and the wrong register for an
+                  operations tool. The tell is loudest on a waiting indicator,
+                  because that is the one thing the eye rests on. */}
               <div className="flex gap-1">
-                <span className="h-2 w-2 animate-bounce rounded-full bg-brand-muted/60" style={{ animationDelay: '0ms' }} />
-                <span className="h-2 w-2 animate-bounce rounded-full bg-brand-muted/60" style={{ animationDelay: '150ms' }} />
-                <span className="h-2 w-2 animate-bounce rounded-full bg-brand-muted/60" style={{ animationDelay: '300ms' }} />
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand-muted/70" style={{ animationDelay: '0ms', animationDuration: '1.2s' }} />
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand-muted/70" style={{ animationDelay: '200ms', animationDuration: '1.2s' }} />
+                <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-brand-muted/70" style={{ animationDelay: '400ms', animationDuration: '1.2s' }} />
               </div>
-              <span className="text-sm text-brand-muted">Thinking...</span>
+              <span className="text-sm text-brand-muted">Reading the records…</span>
             </div>
           ) : isUser ? (
             <p className="text-sm whitespace-pre-wrap leading-relaxed">

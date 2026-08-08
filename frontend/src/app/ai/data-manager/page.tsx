@@ -214,44 +214,31 @@ export default function DataManagerPage() {
 
       {s && (
         <>
-          <div className='grid gap-3 sm:grid-cols-2 lg:grid-cols-4'>
-            <Card>
-              <CardContent className='p-4'>
-                <p className='text-xs uppercase tracking-wide text-muted-foreground'>
-                  Connected
-                </p>
-                <p className='mt-1 text-2xl font-semibold tabular-nums'>{s.total}</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className='p-4'>
-                <p className='text-xs uppercase tracking-wide text-muted-foreground'>
-                  Healthy
-                </p>
-                <p className='mt-1 text-2xl font-semibold tabular-nums text-emerald-600'>
-                  {s.healthy}
-                </p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className='p-4'>
-                <p className='text-xs uppercase tracking-wide text-muted-foreground'>
-                  Unverified
-                </p>
-                <p className='mt-1 text-2xl font-semibold tabular-nums'>{s.unknown}</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardContent className='p-4'>
-                <p className='text-xs uppercase tracking-wide text-muted-foreground'>
-                  Categories live
-                </p>
-                <p className='mt-1 text-2xl font-semibold tabular-nums'>
-                  {s.categories_live.length}
-                </p>
-              </CardContent>
-            </Card>
-          </div>
+          {/* One line, not four cards.
+              Four summary cards sat above a list of five integrations —
+              summarising something short enough to count at a glance, while
+              pushing the actual evidence (how each connection was verified)
+              below the fold. The evidence is the differentiator here; the
+              arithmetic is not. */}
+          <p className='text-sm text-muted-foreground'>
+            <span className='font-semibold text-brand-navy tabular-nums'>{s.total}</span> connected
+            {' · '}
+            <span className='font-semibold text-emerald-600 tabular-nums'>{s.healthy}</span> healthy
+            {s.degraded > 0 && (
+              <>
+                {' · '}
+                <span className='font-semibold text-amber-600 tabular-nums'>{s.degraded}</span> degraded
+              </>
+            )}
+            {s.unknown > 0 && (
+              <>
+                {' · '}
+                <span className='font-semibold tabular-nums'>{s.unknown}</span> unverified
+              </>
+            )}
+            {' · across '}
+            {s.categories_live.length} categories
+          </p>
 
           {!s.meets_round2_floor && (
             <Card className='border-amber-500/40 bg-amber-500/5'>

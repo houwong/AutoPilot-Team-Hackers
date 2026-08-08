@@ -15,6 +15,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { motion, useInView } from 'framer-motion'
 
+import { RunTrace } from '@/components/agent/RunTrace'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { CardWatermark } from '@/components/ui/card-watermark'
@@ -217,6 +218,10 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null)
   const [triggering, setTriggering] = useState(false)
   const [target, setTarget] = useState('')
+  // The run currently being watched step by step. Set on trigger; the trace
+  // keeps polling until the run settles and then stays on screen, because the
+  // finished sequence is the thing worth reading.
+  const [watching, setWatching] = useState<string | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -248,10 +253,14 @@ export default function DashboardPage() {
       // Blank means "take the top of the queue"; a key runs that specific
       // ticket. The brief warns to expect a judge asking for a case you did
       // not rehearse, so this has to be reachable from the UI.
-      await agent.trigger({
+      const run = await agent.trigger({
         trigger: 'manual',
         target_issue_key: target.trim() || undefined,
       })
+      // Watch this one. A run takes about two minutes and the operator steps
+      // are persisted as they arrive, so there is no reason to show nothing
+      // while the agent is working.
+      setWatching(run.run_id)
       await refresh()
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not start a run')
@@ -274,8 +283,13 @@ export default function DashboardPage() {
     >
       <motion.div variants={itemVariants} className='flex flex-wrap items-end justify-between gap-4'>
         <div>
-          <h1 className='text-display-3 font-bold tracking-tight text-brand-navy'>
-            Service Desk <span className='text-gradient'>Command Center</span>
+          {/* Emphasis from weight, not a gradient. A three-stop gradient across
+              the product's own name reads as decoration on the first thing
+              anyone sees, and the wordmark is the one place that should look
+              deliberate. */}
+          <h1 className='text-display-3 tracking-tight text-brand-navy'>
+            <span className='font-medium'>Service Desk</span>{' '}
+            <span className='font-bold'>Command Center</span>
           </h1>
           <p className='mt-2 text-muted-foreground'>
             {sd?.available
@@ -328,6 +342,14 @@ export default function DashboardPage() {
         </Card>
       )}
 
+      {/* The run, while it happens. Appears on trigger, stays after it settles:
+          the finished sequence is what a reader wants, not just the live one. */}
+      {watching && (
+        <motion.div variants={itemVariants}>
+          <RunTrace runId={watching} onSettled={refresh} />
+        </motion.div>
+      )}
+
       <div className='grid grid-cols-2 gap-4 lg:grid-cols-4'>
         <StatCard
           title='Agent runs'
@@ -356,24 +378,62 @@ export default function DashboardPage() {
           value={w?.open ?? 0}
           icon={Icons.inbox}
           note={w?.avg_review_ms ? `${Math.round(w.avg_review_ms / 60000)}m avg review` : 'queue clear'}
-          colorClass='bg-gradient-to-br from-amber-500 to-orange-500'
+          colorClass='bg-amber-500'
           tone={(w?.open ?? 0) > 0 ? 'alert' : undefined}
         />
       </div>
 
+      {/* The queue, given room.
+          This was a thin strip below the stat row, easy to scroll past — and it
+          is the newest capability the build has. When a batch is running it now
+          shows the same progress bar the Processed page uses, so the two
+          surfaces agree at a glance and the dashboard answers "is it working
+          through the backlog right now" without a click. */}
       <motion.div variants={itemVariants}>
-        <Card>
-          <CardContent className='flex flex-wrap items-center justify-between gap-4 p-5'>
-            <div>
-              <p className='text-micro uppercase text-brand-muted'>Ticket queue</p>
-              <p className='mt-1 text-base font-semibold text-brand-navy'>
-                {activeQueue ? `${activeQueue.counts.processed ?? 0} of ${activeQueue.counts.total ?? 0} tickets completed` : 'No active ticket batch'}
-              </p>
-              <p className='mt-1 text-xs text-muted-foreground'>
-                {activeQueue ? `${activeQueue.counts.pending ?? 0} pending · ${activeQueue.counts.awaiting_human ?? 0} awaiting human` : 'Preview a batch before the scheduler starts it.'}
-              </p>
+        <Card className={activeQueue ? 'border-brand-cornflower/40' : undefined}>
+          <CardContent className='p-5'>
+            <div className='flex flex-wrap items-center justify-between gap-4'>
+              <div>
+                <p className='text-base font-semibold text-brand-navy'>
+                  {activeQueue
+                    ? `Working through a batch of ${activeQueue.counts.total ?? 0}`
+                    : 'No batch running'}
+                </p>
+                <p className='mt-1 text-sm text-muted-foreground'>
+                  {activeQueue
+                    ? `${activeQueue.counts.processed ?? 0} done · ${activeQueue.counts.pending ?? 0} queued · ${activeQueue.counts.awaiting_human ?? 0} waiting on a person`
+                    : 'Tickets are ranked by SLA state, not stored priority. Nothing runs until a batch is confirmed.'}
+                </p>
+              </div>
+              <Link href='/processed'>
+                <Button variant={activeQueue ? 'default' : 'outline'}>
+                  {activeQueue ? 'Open the queue' : 'Preview a batch'}
+                </Button>
+              </Link>
             </div>
-            <Link href='/processed'><Button variant='outline'>Open processed history</Button></Link>
+
+            {activeQueue && (activeQueue.counts.total ?? 0) > 0 && (
+              <div className='mt-4 flex h-2 w-full overflow-hidden rounded-full bg-muted'>
+                {(activeQueue.counts.processed ?? 0) > 0 && (
+                  <div
+                    className='bg-emerald-500'
+                    style={{ width: `${((activeQueue.counts.processed ?? 0) / (activeQueue.counts.total ?? 1)) * 100}%` }}
+                  />
+                )}
+                {(activeQueue.counts.running ?? 0) > 0 && (
+                  <div
+                    className='bg-brand-cornflower'
+                    style={{ width: `${((activeQueue.counts.running ?? 0) / (activeQueue.counts.total ?? 1)) * 100}%` }}
+                  />
+                )}
+                {(activeQueue.counts.awaiting_human ?? 0) > 0 && (
+                  <div
+                    className='bg-amber-500'
+                    style={{ width: `${((activeQueue.counts.awaiting_human ?? 0) / (activeQueue.counts.total ?? 1)) * 100}%` }}
+                  />
+                )}
+              </div>
+            )}
           </CardContent>
         </Card>
       </motion.div>
