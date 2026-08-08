@@ -1,11 +1,11 @@
 {
-  "exportFormatVersion": "1.0",
+  "exportFormatVersion": 1,
   "exportedAt": "2026-08-08T00:00:00Z",
-  "rootWorkflowId": "019fd290-bdf0-7009-8c41-7e9d9f2a1b02",
+  "rootWorkflowId": "019fe08c-0dee-7000-9743-1f7e64f2c195",
   "versionExportMode": "all",
   "workflows": [
     {
-      "sourceWorkflowId": "019fd290-bdf0-7009-8c41-7e9d9f2a1b02",
+      "sourceWorkflowId": "019fe08c-0dee-7000-9743-1f7e64f2c195",
       "sourceDefaultVersionNumber": 1,
       "versions": [
         {
@@ -133,30 +133,30 @@
               }
             ],
             "start_at": [
-              "step_operator_5",
-              "step_operator_6"
+              "step_sla_evidence",
+              "step_incident_detector"
             ],
             "steps": [
               {
-                "id": "step_operator_5",
-                "name": "Operator 5 SLA Engine",
-                "description": "Read-only call to Operator 5 SLA Engine.",
+                "id": "step_sla_evidence",
+                "name": "Queue Planner SLA Evidence",
+                "description": "Read-only call to Queue Planner SLA Evidence.",
                 "services": [
                   "python"
                 ],
                 "is_human_input_step": false,
                 "subworkflow_call": {
-                  "workflow_id": "019fd290-bdf0-7001-b84c-b24f8a66c031",
-                  "input_mapping_agent_prompt": "Map the exact inputs for Operator 5 SLA Engine into the namespaced payload.",
-                  "output_mapping_agent_prompt": "Preserve the complete output from Operator 5 SLA Engine.",
-                  "input_mapping_code_cell": "import json\n\nasync def step_operator_5_input_mapping():\n    payload = {\n        \"sla_targets\": user_inputs.get(\"sla_targets\"),\n        \"at_risk_window_minutes\": user_inputs.get(\"at_risk_window_minutes\"),\n        \"default_region\": user_inputs.get(\"default_region\"),\n        \"as_of\": user_inputs.get(\"as_of\"),\n        \"issue_keys\": \"\",\n    }\n    globals()[\"_subworkflow_inputs_step_operator_5\"] = payload\n    print(json.dumps(payload, default=str))\n\nawait step_operator_5_input_mapping()\n",
-                  "output_mapping_code_cell": "import json\n\nasync def step_operator_5_output_mapping():\n    raw = globals().get(\"_subworkflow_outputs_step_operator_5\")\n    if not raw:\n        raise ValueError(\"MISSING_OPERATOR_5_OUTPUT\")\n    globals()[\"sla_states_json\"] = raw\n    print(json.dumps(raw, default=str))\n\nawait step_operator_5_output_mapping()\n"
+                  "workflow_id": "019fe08a-71b9-7000-9fe4-ad091249e01d",
+                  "input_mapping_agent_prompt": "Map the exact inputs for Queue Planner SLA Evidence into the namespaced payload.",
+                  "output_mapping_agent_prompt": "Preserve the complete output from Queue Planner SLA Evidence.",
+                  "input_mapping_code_cell": "import json\n\nasync def step_sla_evidence_input_mapping():\n    payload = {\n        \"sla_targets\": user_inputs.get(\"sla_targets\"),\n        \"at_risk_window_minutes\": user_inputs.get(\"at_risk_window_minutes\"),\n        \"default_region\": user_inputs.get(\"default_region\"),\n        \"as_of\": user_inputs.get(\"as_of\"),\n        \"issue_keys\": \"\",\n    }\n    globals()[\"_subworkflow_inputs_step_sla_evidence\"] = payload\n    print(json.dumps(payload, default=str))\n\nawait step_sla_evidence_input_mapping()\n",
+                  "output_mapping_code_cell": "import json\n\nasync def step_sla_evidence_output_mapping():\n    raw = globals().get(\"_subworkflow_outputs_step_sla_evidence\")\n    if not raw:\n        raise ValueError(\"MISSING_SLA_EVIDENCE_OUTPUT\")\n    globals()[\"sla_states_json\"] = raw\n    print(json.dumps(raw, default=str))\n\nawait step_sla_evidence_output_mapping()\n"
                 },
                 "depends_on": [],
                 "next_steps": []
               },
               {
-                "id": "step_operator_6",
+                "id": "step_incident_detector",
                 "name": "Operator 6 Incident Detector",
                 "description": "Read-only call to Operator 6 Incident Detector.",
                 "services": [
@@ -164,33 +164,33 @@
                 ],
                 "is_human_input_step": false,
                 "subworkflow_call": {
-                  "workflow_id": "019fd290-bdf0-7002-992a-58afae950865",
+                  "workflow_id": "019fd826-9991-7002-921c-fa8b545f3373",
                   "input_mapping_agent_prompt": "Map the exact inputs for Operator 6 Incident Detector into the namespaced payload.",
                   "output_mapping_agent_prompt": "Preserve the complete output from Operator 6 Incident Detector.",
-                  "input_mapping_code_cell": "import json\n\nasync def step_operator_6_input_mapping():\n    payload = {\n        \"flood_threshold_count\": user_inputs.get(\"flood_threshold_count\"),\n        \"flood_window_minutes\": user_inputs.get(\"flood_window_minutes\"),\n        \"correlation_confidence_threshold\": user_inputs.get(\"correlation_confidence_threshold\"),\n        \"include_relationship_types\": user_inputs.get(\"include_relationship_types\"),\n        \"recurring_error_min_count\": user_inputs.get(\"recurring_error_min_count\"),\n        \"as_of\": user_inputs.get(\"as_of\"),\n    }\n    globals()[\"_subworkflow_inputs_step_operator_6\"] = payload\n    print(json.dumps(payload, default=str))\n\nawait step_operator_6_input_mapping()\n",
-                  "output_mapping_code_cell": "import json\n\nasync def step_operator_6_output_mapping():\n    raw = globals().get(\"_subworkflow_outputs_step_operator_6\")\n    if not raw:\n        raise ValueError(\"MISSING_OPERATOR_6_OUTPUT\")\n    globals()[\"incident_clusters_json\"] = raw\n    print(json.dumps(raw, default=str))\n\nawait step_operator_6_output_mapping()\n"
+                  "input_mapping_code_cell": "import json\n\nasync def step_incident_detector_input_mapping():\n    payload = {\n        \"flood_threshold_count\": user_inputs.get(\"flood_threshold_count\"),\n        \"flood_window_minutes\": user_inputs.get(\"flood_window_minutes\"),\n        \"correlation_confidence_threshold\": user_inputs.get(\"correlation_confidence_threshold\"),\n        \"include_relationship_types\": user_inputs.get(\"include_relationship_types\"),\n        \"recurring_error_min_count\": user_inputs.get(\"recurring_error_min_count\"),\n        \"as_of\": user_inputs.get(\"as_of\"),\n    }\n    globals()[\"_subworkflow_inputs_step_incident_detector\"] = payload\n    print(json.dumps(payload, default=str))\n\nawait step_incident_detector_input_mapping()\n",
+                  "output_mapping_code_cell": "import json\n\nasync def step_incident_detector_output_mapping():\n    raw = globals().get(\"_subworkflow_outputs_step_incident_detector\")\n    if not raw:\n        raise ValueError(\"MISSING_OPERATOR_6_OUTPUT\")\n    globals()[\"incident_clusters_json\"] = raw\n    print(json.dumps(raw, default=str))\n\nawait step_incident_detector_output_mapping()\n"
                 },
                 "depends_on": [],
                 "next_steps": []
               },
               {
-                "id": "step_queue_planner",
-                "name": "new Queue Planning Triage operator",
-                "description": "Read-only call to new Queue Planning Triage operator.",
+                "id": "step_triage",
+                "name": "Queue Planning Triage",
+                "description": "Read-only call to Queue Planning Triage.",
                 "services": [
                   "python"
                 ],
                 "is_human_input_step": false,
                 "subworkflow_call": {
-                  "workflow_id": "019fd290-bdf0-7008-8c41-7e9d9f2a1b01",
-                  "input_mapping_agent_prompt": "Map the exact inputs for new Queue Planning Triage operator into the namespaced payload.",
-                  "output_mapping_agent_prompt": "Preserve the complete output from new Queue Planning Triage operator.",
-                  "input_mapping_code_cell": "import json\n\nasync def step_queue_planner_input_mapping():\n    sla = globals().get(\"sla_states_json\")\n    incidents = globals().get(\"incident_clusters_json\")\n    if not sla or not incidents:\n        raise ValueError(\"MISSING_PLANNER_EVIDENCE\")\n    payload = {\n        \"sla_states_json\": sla,\n        \"incident_clusters_json\": incidents,\n        \"priority_ranking_order\": user_inputs.get(\"priority_ranking_order\"),\n        \"max_candidates\": user_inputs.get(\"max_candidates\"),\n    }\n    globals()[\"_subworkflow_inputs_step_queue_planner\"] = payload\n    print(json.dumps(payload, default=str))\n\nawait step_queue_planner_input_mapping()\n",
-                  "output_mapping_code_cell": "import json\n\nasync def step_queue_planner_output_mapping():\n    raw = globals().get(\"_subworkflow_outputs_step_queue_planner\")\n    if not raw:\n        raise ValueError(\"MISSING_QUEUE_PLANNER_OUTPUT\")\n    globals()[\"prioritized_tickets\"] = raw\n    print(json.dumps(raw, default=str))\n\nawait step_queue_planner_output_mapping()\n"
+                  "workflow_id": "019fe092-c299-7000-8ac4-42d685892cbf",
+                  "input_mapping_agent_prompt": "Map the exact inputs for Queue Planning Triage into the namespaced payload.",
+                  "output_mapping_agent_prompt": "Preserve the complete output from Queue Planning Triage.",
+                  "input_mapping_code_cell": "import json\n\nasync def step_triage_input_mapping():\n    sla = globals().get(\"sla_states_json\")\n    incidents = globals().get(\"incident_clusters_json\")\n    if not sla or not incidents:\n        raise ValueError(\"MISSING_PLANNER_EVIDENCE\")\n    payload = {\n        \"sla_states_json\": sla,\n        \"incident_clusters_json\": incidents,\n        \"priority_ranking_order\": user_inputs.get(\"priority_ranking_order\"),\n        \"max_candidates\": user_inputs.get(\"max_candidates\"),\n    }\n    globals()[\"_subworkflow_inputs_step_triage\"] = payload\n    print(json.dumps(payload, default=str))\n\nawait step_triage_input_mapping()\n",
+                  "output_mapping_code_cell": "import json\n\nasync def step_triage_output_mapping():\n    raw = globals().get(\"_subworkflow_outputs_step_triage\")\n    if not raw:\n        raise ValueError(\"MISSING_QUEUE_PLANNER_OUTPUT\")\n    globals()[\"prioritized_tickets\"] = raw\n    print(json.dumps(raw, default=str))\n\nawait step_triage_output_mapping()\n"
                 },
                 "depends_on": [
-                  "step_operator_5",
-                  "step_operator_6"
+                  "step_sla_evidence",
+                  "step_incident_detector"
                 ],
                 "next_steps": []
               }

@@ -110,6 +110,20 @@ def _workflow_run_id(run: dict[str, Any]) -> Optional[str]:
     return str(value) if value else None
 
 
+def _final_subworkflow_run_id(run: dict[str, Any]) -> Optional[str]:
+    """Return the last audited child-run ID linked from an orchestrator step."""
+    for activity in reversed(_activity_runs(run)):
+        outputs = activity.get("outputs") or {}
+        display_data = outputs.get("displayData") or {}
+        html = display_data.get("html") if isinstance(display_data, dict) else None
+        if not isinstance(html, str):
+            continue
+        match = re.search(r"/runs/([0-9A-Za-z-]+)", html)
+        if match:
+            return match.group(1)
+    return None
+
+
 def _json_from_workflow_run(run: dict[str, Any]) -> dict[str, Any]:
     """Extract the final planner JSON from Auto's several response shapes."""
     if isinstance(run.get("prioritized_tickets"), list):
@@ -229,11 +243,28 @@ async def v2_ranked_backlog(
         )
     except AutoError as exc:
         raise PlannerUnavailable(f"Queue Planner unavailable: {exc}") from exc
-    return normalize_planner_result(
-        run,
-        run_id=_workflow_run_id(run),
-        policy_snapshot=policy_snapshot,
-    )
+    run_id = _workflow_run_id(run)
+    try:
+        return normalize_planner_result(
+            run,
+            run_id=run_id,
+            policy_snapshot=policy_snapshot,
+        )
+    except PlannerUnavailable as root_error:
+        child_run_id = _final_subworkflow_run_id(run)
+        if not child_run_id:
+            raise root_error
+        try:
+            child_result = await client.get_step_result(child_run_id)
+        except AutoError as exc:
+            raise PlannerUnavailable(
+                f"Queue Planner final triage run unavailable: {exc}"
+            ) from exc
+        return normalize_planner_result(
+            child_result,
+            run_id=run_id,
+            policy_snapshot=policy_snapshot,
+        )
 
 
 async def planner_result(db: Session, force_refresh: bool = False) -> PlannerResult:

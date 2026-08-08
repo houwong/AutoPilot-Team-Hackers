@@ -324,6 +324,61 @@ async def test_v2_mode_calls_the_new_queue_planner_id(db, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_v2_follows_final_triage_subworkflow_audit_link(db, monkeypatch):
+    monkeypatch.setenv("AUTO_WF_QUEUE_PLANNER", "new-planner-id")
+    called = {}
+
+    async def fake_execute(_client, workflow_id, inputs):
+        return {
+            "workflowRun": {"id": "root-run"},
+            "activityRuns": [
+                {
+                    "stepId": "step_triage",
+                    "outputs": {
+                        "displayData": {
+                            "html": (
+                                '<a href="https://auto.supervity.ai/u/alpha/agent/workflow/'
+                                'planner-child/runs/child-run-id">View subworkflow run audit</a>'
+                            )
+                        },
+                        "output": "",
+                        "error": "",
+                    },
+                }
+            ],
+        }
+
+    async def fake_get_step_result(_client, run_id):
+        called["run_id"] = run_id
+        return {
+            "schema_version": "1",
+            "generated_at": "2026-08-08T04:00:00Z",
+            "effective_as_of": "2026-08-08T04:00:00Z",
+            "tickets_scanned": 1,
+            "tickets_eligible": 1,
+            "sla_evaluated_count": 1,
+            "prioritized_tickets": [
+                {
+                    "issue_key": "ITSM-1",
+                    "sla_status": "Breached",
+                    "vip": False,
+                    "priority_rank": 2,
+                    "rank_position": 1,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(queue_planner.AutoClient, "execute", fake_execute)
+    monkeypatch.setattr(queue_planner.AutoClient, "get_step_result", fake_get_step_result)
+
+    result = await queue_planner.v2_ranked_backlog(db)
+
+    assert called["run_id"] == "child-run-id"
+    assert result.run_id == "root-run"
+    assert result.tickets[0]["issue_key"] == "ITSM-1"
+
+
+@pytest.mark.asyncio
 async def test_legacy_mode_does_not_call_the_new_planner(db, monkeypatch):
     monkeypatch.setenv("QUEUE_PLANNER_MODE", "legacy")
     called = {"legacy": 0, "v2": 0}

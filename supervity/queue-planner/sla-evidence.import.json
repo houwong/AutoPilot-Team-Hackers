@@ -1,0 +1,102 @@
+{
+  "exportFormatVersion": 1,
+  "exportedAt": "2026-08-08T00:00:00Z",
+  "rootWorkflowId": "019fe08a-71b9-7000-9fe4-ad091249e01d",
+  "versionExportMode": "all",
+  "workflows": [
+    {
+      "sourceWorkflowId": "019fe08a-71b9-7000-9fe4-ad091249e01d",
+      "sourceDefaultVersionNumber": 1,
+      "versions": [
+        {
+          "sourceVersionId": "019fe080-0000-7000-8000-000000000002",
+          "versionNumber": 1,
+          "commitMessage": "Deterministic Section 4.1 queue planning workflow",
+          "definition": {
+            "name": "Queue Planner SLA Evidence",
+            "description": "Read-only deterministic SLA and VIP evidence for every active ticket.",
+            "business_functions": [
+              "IT Service Management",
+              "Queue Planning"
+            ],
+            "envs": [],
+            "inputs": [
+              {
+                "name": "sla_targets",
+                "description": "VIP and non-VIP resolution targets.",
+                "type": "textarea",
+                "label": "SLA Targets",
+                "required": false,
+                "default": "VIP: 4h response / 24h resolution; Non-VIP: 8h response / 48h resolution",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "at_risk_window_minutes",
+                "description": "Minutes before breach considered at risk.",
+                "type": "number",
+                "label": "At Risk Window",
+                "required": false,
+                "default": "120",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "default_region",
+                "description": "Fallback SLA calendar region.",
+                "type": "text",
+                "label": "Default Region",
+                "required": false,
+                "default": "Global",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "as_of",
+                "description": "Reference datetime for SLA calculation.",
+                "type": "text",
+                "label": "As Of",
+                "required": false,
+                "default": "2026-07-25T00:00:00Z",
+                "is_hidden": false,
+                "multiple": false
+              }
+            ],
+            "start_at": [
+              "step_sla_evidence"
+            ],
+            "steps": [
+              {
+                "id": "step_sla_evidence",
+                "name": "Compute deterministic SLA evidence",
+                "description": "Fetch active issues and supporting reference data, then calculate SLA and VIP evidence.",
+                "services": [
+                  "python",
+                  "supabase"
+                ],
+                "depends_on": [],
+                "code_cell": "import asyncio\nimport json\nimport os\nimport re\nfrom datetime import datetime, time, timedelta, timezone\nfrom zoneinfo import ZoneInfo\n\nimport httpx\n\n\nACTIVE_STATUSES = {\"Open\", \"In Progress\", \"Waiting for support\", \"Waiting for customer\"}\n\n\ndef _parse_datetime(value):\n    text = str(value or \"\").strip()\n    if not text:\n        raise ValueError(\"MISSING_TICKET_CREATED\")\n    candidate = text.replace(\"Z\", \"+00:00\")\n    try:\n        parsed = datetime.fromisoformat(candidate)\n    except ValueError:\n        parsed = None\n        for pattern in (\"%b %d %Y\", \"%d/%m/%Y\"):\n            try:\n                parsed = datetime.strptime(text, pattern)\n                break\n            except ValueError:\n                continue\n        if parsed is None:\n            raise ValueError(\"INVALID_TICKET_CREATED: \" + text)\n    if parsed.tzinfo is None:\n        parsed = parsed.replace(tzinfo=timezone.utc)\n    return parsed.astimezone(timezone.utc)\n\n\ndef _resolution_targets(raw):\n    result = {\"VIP\": 1440, \"Non-VIP\": 2880}\n    for group in str(raw or \"\").split(\";\"):\n        if \":\" not in group:\n            continue\n        label, rules = group.split(\":\", 1)\n        category = \"Non-VIP\" if \"non-vip\" in label.casefold() else \"VIP\"\n        match = re.search(r\"(\\d+)\\s*([hm])\\s*resolution\", rules, re.IGNORECASE)\n        if match:\n            value = int(match.group(1))\n            result[category] = value * 60 if match.group(2).casefold() == \"h\" else value\n    return result\n\n\ndef _business_minutes(start_utc, end_utc, calendar):\n    if end_utc < start_utc:\n        raise ValueError(\"AS_OF_PRECEDES_TICKET_CREATED\")\n    hours = str(calendar.get(\"business_hours\") or \"09:00-17:00 Mon-Fri\")\n    zone = ZoneInfo(str(calendar.get(\"timezone\") or \"UTC\"))\n    holidays = {\n        value.strip()\n        for value in str(calendar.get(\"holiday_dates\") or \"\").split(\";\")\n        if value.strip()\n    }\n    start_local = start_utc.astimezone(zone)\n    end_local = end_utc.astimezone(zone)\n    always_open = \"24x7\" in hours.casefold() or \"24/7\" in hours.casefold()\n    match = re.search(r\"(\\d{1,2}):(\\d{2})-(\\d{1,2}):(\\d{2})\", hours)\n    if not always_open and not match:\n        raise ValueError(\"INVALID_BUSINESS_HOURS: \" + hours)\n    open_time = time(int(match.group(1)), int(match.group(2))) if match else time(0, 0)\n    close_time = time(int(match.group(3)), int(match.group(4))) if match else time(0, 0)\n    elapsed = 0\n    day = start_local.date()\n    while day <= end_local.date():\n        is_holiday = day.isoformat() in holidays\n        if not is_holiday and (always_open or day.weekday() < 5):\n            window_start = datetime.combine(day, open_time, tzinfo=zone)\n            window_end = (\n                datetime.combine(day + timedelta(days=1), time(0, 0), tzinfo=zone)\n                if always_open\n                else datetime.combine(day, close_time, tzinfo=zone)\n            )\n            overlap_start = max(start_local, window_start)\n            overlap_end = min(end_local, window_end)\n            if overlap_start < overlap_end:\n                elapsed += int((overlap_end - overlap_start).total_seconds() // 60)\n        day += timedelta(days=1)\n    return elapsed\n\n\nasync def _service_key(base_url, token):\n    if not token:\n        raise ValueError(\"SUPABASE_READ_CONFIGURATION_MISSING\")\n    if not token.startswith(\"sbp_\"):\n        return token\n    project_ref = base_url.split(\"//\", 1)[-1].split(\".\", 1)[0]\n    async with httpx.AsyncClient(timeout=30.0) as client:\n        response = await client.get(\n            \"https://api.supabase.com/v1/projects/\" + project_ref + \"/api-keys\",\n            headers={\"Authorization\": \"Bearer \" + token},\n        )\n    response.raise_for_status()\n    key = next(\n        (item.get(\"api_key\") for item in response.json() if item.get(\"name\") == \"service_role\"),\n        None,\n    )\n    if not key:\n        raise ValueError(\"SUPABASE_SERVICE_ROLE_KEY_MISSING\")\n    return key\n\n\nasync def _fetch_source_tables():\n    base_url = str(os.environ.get(\"SUPABASE_URL\") or \"https://pkwvlnvxmawvgqzqvkcg.supabase.co\").rstrip(\"/\")\n    key = await _service_key(base_url, os.environ.get(\"SUPABASE_TOKEN\"))\n    headers = {\"apikey\": key, \"Authorization\": \"Bearer \" + key}\n\n    async def fetch(table):\n        async with httpx.AsyncClient(timeout=45.0) as client:\n            response = await client.get(\n                base_url + \"/rest/v1/\" + table,\n                params={\"select\": \"*\", \"limit\": \"1000\"},\n                headers=headers,\n            )\n        response.raise_for_status()\n        rows = response.json()\n        if not isinstance(rows, list):\n            raise ValueError(\"INVALID_SUPABASE_\" + table.upper())\n        return rows\n\n    issues, users, calendars = await asyncio.gather(\n        fetch(\"issues\"), fetch(\"users_directory\"), fetch(\"sla_calendar\")\n    )\n    return {\"issues\": issues, \"users\": users, \"calendars\": calendars}\n\n\nasync def step_sla_evidence_operator():\n    source = await _fetch_source_tables()\n    as_of = _parse_datetime(user_inputs.get(\"as_of\") or datetime.now(timezone.utc).isoformat())\n    targets = _resolution_targets(user_inputs.get(\"sla_targets\"))\n    try:\n        at_risk = int(user_inputs.get(\"at_risk_window_minutes\") or 120)\n    except (TypeError, ValueError) as exc:\n        raise ValueError(\"INVALID_AT_RISK_WINDOW\") from exc\n    default_region = str(user_inputs.get(\"default_region\") or \"Global\")\n    users = {}\n    for row in source[\"users\"]:\n        name = str(row.get(\"display_name\") or \"\").strip()\n        if name:\n            users.setdefault(name, row)\n    calendars = {\n        str(row.get(\"region\")): row\n        for row in source[\"calendars\"]\n        if row.get(\"region\")\n    }\n    fallback_calendar = calendars.get(default_region)\n    if not fallback_calendar:\n        raise ValueError(\"MISSING_DEFAULT_SLA_CALENDAR\")\n\n    tickets = []\n    for issue in source[\"issues\"]:\n        if str(issue.get(\"Status\") or \"\").strip() not in ACTIVE_STATUSES:\n            continue\n        issue_key = str(issue.get(\"Issue key\") or \"\").strip()\n        if not issue_key:\n            raise ValueError(\"MISSING_ACTIVE_ISSUE_KEY\")\n        user = users.get(str(issue.get(\"Reporter\") or \"\").strip()) or {}\n        raw_vip = user.get(\"x_vip\", False)\n        is_vip = raw_vip if isinstance(raw_vip, bool) else str(raw_vip).casefold() == \"true\"\n        region = str(user.get(\"location\") or default_region)\n        calendar = calendars.get(region, fallback_calendar)\n        created = _parse_datetime(issue.get(\"Created\"))\n        target = targets[\"VIP\" if is_vip else \"Non-VIP\"]\n        elapsed = _business_minutes(created, as_of, calendar)\n        remaining = target - elapsed\n        state = \"Breached\" if remaining < 0 else (\"At risk\" if remaining <= at_risk else \"Within SLA\")\n        tickets.append({\n            \"issue_key\": issue_key,\n            \"computed_sla_state\": state,\n            \"is_vip\": is_vip,\n            \"elapsed_business_minutes\": elapsed,\n            \"sla_target_minutes\": target,\n        })\n\n    result = {\n        \"evaluated_count\": len(tickets),\n        \"effective_as_of\": as_of.isoformat(),\n        \"tickets\": tickets,\n    }\n    globals()[\"sla_evidence\"] = result\n    print(json.dumps(result, indent=2, default=str))\n\n\nawait step_sla_evidence_operator()\n",
+                "next_steps": []
+              }
+            ],
+            "pip_packages": [
+              "httpx"
+            ],
+            "integration_overrides": {}
+          }
+        }
+      ]
+    }
+  ],
+  "schedules": [],
+  "integrationsManifest": {
+    "services": [
+      "python",
+      "supabase"
+    ],
+    "envNames": [
+      "SUPABASE_URL",
+      "SUPABASE_TOKEN"
+    ]
+  }
+}

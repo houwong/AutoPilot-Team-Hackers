@@ -21,6 +21,22 @@ REQUIRED_OUTPUT_FIELDS = (
 
 
 def _json_value(value, label):
+    if isinstance(value, dict) and isinstance(value.get("outputs"), list):
+        for activity in reversed(value["outputs"]):
+            if not isinstance(activity, dict):
+                continue
+            outputs = activity.get("outputs") or {}
+            raw = outputs.get("output") if isinstance(outputs, dict) else None
+            if isinstance(raw, (dict, list)):
+                return raw
+            if isinstance(raw, str) and raw.strip():
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, (dict, list)):
+                    return parsed
+        raise ValueError("INVALID_" + label.upper())
     if isinstance(value, (dict, list)):
         return value
     if value is None or str(value).strip() == "":
@@ -125,16 +141,38 @@ def _incident_evidence(payload):
 
 
 async def _fetch_active_issues():
-    base_url = str(os.environ.get("SUPABASE_URL") or "").rstrip("/")
+    base_url = str(
+        os.environ.get("SUPABASE_URL")
+        or "https://pkwvlnvxmawvgqzqvkcg.supabase.co"
+    ).rstrip("/")
     token = os.environ.get("SUPABASE_TOKEN")
-    if not base_url or not token:
+    if not token:
         raise ValueError("SUPABASE_READ_CONFIGURATION_MISSING")
+    api_key = token
+    if token.startswith("sbp_"):
+        project_ref = base_url.split("//", 1)[-1].split(".", 1)[0]
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            key_response = await client.get(
+                "https://api.supabase.com/v1/projects/" + project_ref + "/api-keys",
+                headers={"Authorization": "Bearer " + token},
+            )
+        key_response.raise_for_status()
+        api_key = next(
+            (
+                item.get("api_key")
+                for item in key_response.json()
+                if item.get("name") == "service_role"
+            ),
+            None,
+        )
+        if not api_key:
+            raise ValueError("SUPABASE_SERVICE_ROLE_KEY_MISSING")
     params = {
         "select": 'row_id,"Issue key","Status","Priority","Updated","customfield_10101 (Assignment group)"',
         "Status": "in.(Open,In Progress,Waiting for support,Waiting for customer)",
         "limit": "1000",
     }
-    headers = {"apikey": token, "Authorization": "Bearer " + token}
+    headers = {"apikey": api_key, "Authorization": "Bearer " + api_key}
     async with httpx.AsyncClient(timeout=30.0) as client:
         response = await client.get(base_url + "/rest/v1/issues", params=params, headers=headers)
     response.raise_for_status()

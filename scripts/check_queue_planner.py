@@ -16,11 +16,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-NEW_OPERATOR_ID = os.getenv("AUTO_WF_OP1_PLANNER", "").strip() or "019fd290-bdf0-7008-8c41-7e9d9f2a1b01"
-QUEUE_PLANNER_ID = os.getenv("AUTO_WF_QUEUE_PLANNER", "").strip() or "019fd290-bdf0-7009-8c41-7e9d9f2a1b02"
+NEW_OPERATOR_ID = os.getenv("AUTO_WF_OP1_PLANNER", "").strip() or "019fe092-c299-7000-8ac4-42d685892cbf"
+QUEUE_PLANNER_ID = os.getenv("AUTO_WF_QUEUE_PLANNER", "").strip() or "019fe08c-0dee-7000-9743-1f7e64f2c195"
 OLD_OPERATOR_ID = "019fd826-9991-7003-84a1-9bac5f1eda3d"
-OP5_ID = "019fd290-bdf0-7001-b84c-b24f8a66c031"
-OP6_ID = "019fd290-bdf0-7002-992a-58afae950865"
+OP5_ID = os.getenv("AUTO_WF_SLA_PLANNER", "").strip() or "019fe08a-71b9-7000-9fe4-ad091249e01d"
+OP6_ID = os.getenv("AUTO_WF_OP6", "").strip() or "019fd826-9991-7002-921c-fa8b545f3373"
 
 OPERATOR_INPUTS = {
     "sla_states_json",
@@ -149,14 +149,17 @@ def validate_bundle(doc: dict[str, Any], *, kind: str) -> list[str]:
         expected_calls = {OP5_ID, OP6_ID, NEW_OPERATOR_ID}
         if calls != expected_calls:
             errors.append(f"planner workflow calls {sorted(calls)}, expected {sorted(expected_calls)}")
-        if set(definition.get("start_at") or []) != {"step_operator_5", "step_operator_6"}:
-            errors.append("Operator 5 and Operator 6 must start in parallel")
-        planner_step = next((s for s in steps if s.get("id") == "step_queue_planner"), None)
-        if not planner_step or set(planner_step.get("depends_on") or []) != {
-            "step_operator_5",
-            "step_operator_6",
+        if set(definition.get("start_at") or []) != {
+            "step_sla_evidence",
+            "step_incident_detector",
         }:
-            errors.append("Queue Planner must depend on both Operator 5 and Operator 6")
+            errors.append("SLA evidence and incident detection must start in parallel")
+        planner_step = next((s for s in steps if s.get("id") == "step_triage"), None)
+        if not planner_step or set(planner_step.get("depends_on") or []) != {
+            "step_sla_evidence",
+            "step_incident_detector",
+        }:
+            errors.append("Queue Planning Triage must depend on both evidence steps")
         if any(s.get("id") in {"step_operator_2", "step_operator_3", "step_operator_4", "step_operator_7"} for s in steps):
             errors.append("planner workflow invokes an execution operator")
     return errors
