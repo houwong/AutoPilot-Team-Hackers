@@ -165,7 +165,12 @@ def _explain_ticket(msg: str, db: Session) -> Optional[tuple[str, list[ToolCall]
 
 
 def _workbench(msg: str, db: Session) -> Optional[tuple[str, list[ToolCall]]]:
-    if not re.search(r"workbench|review|exception|waiting|approv|queue", msg, re.I):
+    if not re.search(
+        r"workbench|review|exception|waiting|approv|queue|need.*(attention|decision|me)|"
+        r"what should i|blocked|stuck|outstanding|pending",
+        msg,
+        re.I,
+    ):
         return None
     items = (
         db.query(ExceptionItem)
@@ -192,7 +197,17 @@ def _workbench(msg: str, db: Session) -> Optional[tuple[str, list[ToolCall]]]:
 
 
 def _performance(msg: str, db: Session) -> Optional[tuple[str, list[ToolCall]]]:
-    if not re.search(r"autonom|how many run|performance|stats|rate|how.*doing|resolve", msg, re.I):
+    # `how.*doing` used to live here and swallowed "how is Slack doing right
+    # now?", answering with run statistics — a confidently wrong answer, which
+    # is worse than a refusal. General "how are things" phrasings are matched
+    # here only after the system-specific routes have declined.
+    if not re.search(
+        r"autonom|how many run|performance|stats|statistic|rate|resolve|"
+        r"how (are|is) (it|things|we|the agent)|everything ok|summar|"
+        r"what happened|recently|today|fail|error|went wrong|broke",
+        msg,
+        re.I,
+    ):
         return None
     total = db.query(AgentRun).count()
     succeeded = db.query(AgentRun).filter(AgentRun.status == RunStatus.SUCCEEDED.value).count()
@@ -249,24 +264,147 @@ def _policies(msg: str, db: Session) -> Optional[tuple[str, list[ToolCall]]]:
     ]
 
 
-def _integrations(msg: str, _db: Session) -> Optional[tuple[str, list[ToolCall]]]:
-    if not re.search(r"slack|outlook|email|integration|supabase|health|connect", msg, re.I):
+async def _integrations(msg: str, db: Session) -> Optional[tuple[str, list[ToolCall]]]:
+    """
+    Report what each connected system is doing right now.
+
+    This used to return a fixed paragraph explaining how verification works,
+    which meant "why is Outlook degraded?" got a lecture on methodology instead
+    of the answer. Read the live registry instead, and name the specific system
+    when the question names one.
+    """
+    if not re.search(
+        r"slack|outlook|e-?mail|integration|supabase|superv|health|connect|"
+        r"system|notif|channel",
+        msg,
+        re.I,
+    ):
         return None
-    return (
-        "Integration health is probed live on the Data Manager page, and each one "
-        "reports **how** it was verified rather than just green or red:\n\n"
-        "- **probed** — we called it just now and timed it (Supabase, Supervity Auto)\n"
-        "- **observed** — we hold no credentials, so health comes from the last "
-        "operator run that used it, including the operator's own per-channel "
-        "delivery status (Slack, Outlook)\n"
-        "- **internal** — our own records (Workbench)\n\n"
-        "That distinction is deliberate: a channel whose step completed has not "
-        "necessarily delivered anything. Outlook reported healthy for a whole day "
-        "while every send was failing on a mailbox quota, because only the "
-        "orchestrator step was being checked. Open the Data Manager for current "
-        "status.",
-        [_tool("describe_integrations", {}, {"source": "app/routers/integrations.py"})],
+
+    from .integrations import list_integrations
+
+    payload = await list_integrations(db)
+    rows = payload.get("integrations") or []
+    summary = payload.get("summary") or {}
+
+    # If the question names one system, answer about that system.
+    #
+    # Match ANY word of the name, not just the first: "Microsoft Outlook" is
+    # asked about as "outlook", and matching only the leading word meant the
+    # question fell through to the general summary. Ignore short filler words so
+    # "Command Center Workbench" is not matched by an unrelated "center".
+    lowered = msg.lower()
+    named = next(
+        (
+            r
+            for r in rows
+            if any(w for w in r["name"].lower().split() if len(w) > 4 and w in lowered)
+        ),
+        None,
     )
+    if named is None and re.search(r"e-?mail", msg, re.I):
+        named = next((r for r in rows if "outlook" in r["name"].lower()), None)
+
+    if named:
+        detail = named.get("detail") or {}
+        lines = [f"**{named['name']}** is **{named['status']}**."]
+        if detail.get("delivery_status"):
+            lines.append(
+                f"The operator's last send reported `{detail['delivery_status']}`."
+            )
+        if detail.get("note"):
+            lines.append(f"_{detail['note']}_")
+        if detail.get("last_run_at"):
+            lines.append(f"Last exercised {detail['last_run_at']}.")
+        lines.append("")
+        lines.append(
+            f"Verified by **{named.get('verification')}** — "
+            + {
+                "probed": "we called it just now and timed the response.",
+                "observed": "we hold no credentials for it, so health comes from "
+                "the last operator run that used it, including that operator's "
+                "own per-channel delivery status.",
+                "internal": "it is our own record-keeping.",
+            }.get(named.get("verification"), "see the Data Manager.")
+        )
+        return "\n".join(lines), [
+            _tool("read_integrations", {"name": named["name"]},
+                  {"status": named["status"], "detail": detail})
+        ]
+
+    lines = [
+        f"**{summary.get('healthy', 0)} of {summary.get('total', 0)}** connected "
+        f"systems are healthy.",
+        "",
+    ]
+    for r in rows:
+        d = r.get("detail") or {}
+        extra = d.get("delivery_status") or d.get("note") or ""
+        lines.append(f"- **{r['name']}** — {r['status']}{f' ({extra})' if extra else ''}")
+    if not summary.get("meets_round2_floor", True):
+        lines.append("")
+        lines.append("Not every category has a verified connection yet.")
+    return "\n".join(lines), [
+        _tool("read_integrations", {}, summary)
+    ]
+
+
+async def _backlog(msg: str, db: Session) -> Optional[tuple[str, list[ToolCall]]]:
+    """
+    Answer questions about the ticket backlog itself.
+
+    "How many tickets are breached?" is one of the most obvious things to ask a
+    service-desk agent, and it used to fall through to the refusal because every
+    route was about the agent rather than the work.
+    """
+    if not re.search(
+        r"backlog|breach|at.?risk|sla|how many ticket|ticket.*(total|open|count)|"
+        r"open ticket|incident",
+        msg,
+        re.I,
+    ):
+        return None
+
+    from .dashboard import kpis as dashboard_kpis
+
+    data = await dashboard_kpis(db)
+    sd = data.get("service_desk") or {}
+    if not sd.get("available"):
+        return (
+            "I could not read the service desk just now, so I have no backlog "
+            "figures to give you.",
+            [_tool("read_service_desk", {}, {"available": False})],
+        )
+
+    sla = sd.get("sla_stated") or {}
+    lines = [
+        f"**{sd.get('tickets_open', 0)}** open of **{sd.get('tickets_total', 0)}** tickets.",
+        "",
+        f"- **{sla.get('breached', 0)}** breached",
+        f"- **{sla.get('at_risk', 0)}** at risk",
+        f"- **{sla.get('within_sla', 0)}** within SLA",
+    ]
+    if sd.get("open_incidents"):
+        lines += ["", f"Open major incidents: {', '.join(sd['open_incidents'])}."]
+    lines += [
+        "",
+        "Those are the labels recorded on the ticket. Operator 5 recomputes SLA "
+        "from business hours and regional holidays, and disagrees with the "
+        "recorded label on most tickets — the queue is ranked on its answer, not "
+        "on this one.",
+    ]
+    return "\n".join(lines), [
+        _tool("read_service_desk", {}, {"open": sd.get("tickets_open"), "sla": sla})
+    ]
+
+
+def _greeting(msg: str, db: Session) -> Optional[tuple[str, list[ToolCall]]]:
+    """A greeting should be met with an offer, not a refusal."""
+    if not re.fullmatch(r"\s*(hi|hey|hello|yo|good (morning|afternoon|evening))\W*",
+                        msg, re.I):
+        return None
+    answer, calls = _capabilities(msg, db)
+    return answer, calls
 
 
 def _capabilities(_msg: str, _db: Session) -> tuple[str, list[ToolCall]]:
@@ -370,12 +508,28 @@ def _asking_what_i_do(msg: str, db: Session) -> Optional[tuple[str, list[ToolCal
     return _capabilities(msg, db)
 
 
-# _trigger_run comes first: "run ITSM-2180" also contains a ticket key, and
-# _explain_ticket would otherwise answer it with history instead of starting the
-# run the user asked for. _trigger_run itself declines anything phrased as a
-# question, so "why did ITSM-2180 escalate" still falls through to the explainer.
-ROUTES = (_trigger_run, _explain_ticket, _asking_what_i_do, _workbench,
-          _performance, _policies, _integrations)
+# Order is the routing logic, so it is deliberate rather than incidental.
+#
+# _trigger_run first: "run ITSM-2180" also contains a ticket key, and
+# _explain_ticket would otherwise answer with history instead of doing what was
+# asked. _trigger_run declines anything phrased as a question, so "why did
+# ITSM-2180 escalate" still reaches the explainer.
+#
+# The specific routes come before the general ones. _integrations sits above
+# _performance because "how is Slack doing right now?" is a question about
+# Slack, and _performance's looser phrasing used to swallow it and answer with
+# run statistics instead.
+ROUTES = (
+    _greeting,
+    _trigger_run,
+    _explain_ticket,
+    _asking_what_i_do,
+    _integrations,
+    _backlog,
+    _workbench,
+    _policies,
+    _performance,
+)
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -405,8 +559,27 @@ async def chat(body: ChatRequest, db: Session = Depends(get_db)) -> ChatResponse
             answer, calls = hit
             return ChatResponse(response=answer, tool_calls=calls)
 
+    # Nothing matched. Say what was understood before saying what was not: a
+    # bare refusal plus a capability list reads as a wall, and the most common
+    # near-miss is a real ticket key in a question phrased in a way no route
+    # recognised.
+    key = ISSUE_KEY_RE.search(msg)
+    if key:
+        return ChatResponse(
+            response=(
+                f"I did not follow the question, but I do have records for "
+                f"**{key.group(1).upper()}**. Ask me *why {key.group(1).upper()} "
+                f"escalated* for its path and decision, or say *run "
+                f"{key.group(1).upper()}* to start a fresh run on it."
+            ),
+            tool_calls=[_tool("near_miss", {"issue_key": key.group(1).upper()}, {})],
+        )
+
     answer, calls = _capabilities(msg, db)
     return ChatResponse(
-        response="I can't answer that from what the Command Center records.\n\n" + answer,
+        response=(
+            "I could not match that to anything I can read from the records, so "
+            "I would rather say so than guess.\n\n" + answer
+        ),
         tool_calls=calls,
     )
