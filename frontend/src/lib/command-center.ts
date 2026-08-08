@@ -176,8 +176,10 @@ export interface QueueItem {
   sla_status?: string | null
   vip?: boolean | null
   priority_rank?: number | null
-  ranked_by?: 'operator_1' | 'source_priority' | null
+  ranked_by?: 'operator_1' | 'source_priority' | 'queue_planner' | 'queue_planner_stale' | null
   ranking_reason?: string | null
+  rank_position?: number | null
+  ranking_evidence?: Record<string, unknown> | null
 }
 
 export interface QueueCampaign {
@@ -192,6 +194,12 @@ export interface QueueCampaign {
   started_at: string | null
   completed_at: string | null
   last_tick_at: string | null
+  planner_mode: 'legacy' | 'queue_planner' | 'queue_planner_stale' | string | null
+  planner_run_id: string | null
+  planner_generated_at: string | null
+  planner_effective_as_of: string | null
+  planner_stale: boolean | null
+  planner_policy_snapshot: Record<string, string> | null
   counts: Record<string, number>
 }
 

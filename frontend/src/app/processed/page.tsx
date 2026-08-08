@@ -168,6 +168,22 @@ export default function ProcessedTicketsPage() {
             {total > 0 && (
               <span className='text-sm text-muted-foreground'>batch of {total}</span>
             )}
+            {campaign?.planner_mode && campaign.planner_mode !== 'legacy' && (
+              <span
+                className={`rounded-full px-2 py-1 text-xs font-medium ${
+                  campaign.planner_stale
+                    ? 'bg-amber-500/10 text-amber-800'
+                    : 'bg-brand-cornflower/10 text-brand-cornflower'
+                }`}
+              >
+                {campaign.planner_stale
+                  ? 'Queue Planner evidence is stale'
+                  : 'Ranked by Queue Planner'}
+                {campaign.planner_run_id && (
+                  <span className='ml-1 font-mono'>run {campaign.planner_run_id.slice(0, 8)}</span>
+                )}
+              </span>
+            )}
           </div>
           <div className='flex flex-wrap gap-2'>
             {!preview && !campaign && (
@@ -232,16 +248,24 @@ export default function ProcessedTicketsPage() {
           <CardHeader><CardTitle className='text-base'>Preview — confirmation required</CardTitle></CardHeader>
           <CardContent>
             <p className='mb-3 text-sm text-muted-foreground'>No Supervity run has started. Confirming this list will process these exact tickets and may update live Supabase records.</p>
-            {/* Show the order's justification, not just the keys. The batch is
-                ranked on SLA state and VIP by Operator 1, which routinely puts a
-                Low-priority breached ticket above a Highest one still within
-                target — that looks wrong until you can see why. */}
+            {preview.campaign.planner_stale && (
+              <p className='mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800'>This preview uses a stale Queue Planner result. Confirm only if the frozen evidence is still acceptable.</p>
+            )}
+            {/* Show the order's frozen planner evidence, not just the keys. A
+                breached Low-priority ticket can outrank a Highest ticket within
+                target; the frozen evidence makes that intentional order reviewable.
+                */}
             <ol className='space-y-1'>
               {preview.items.map((item, i) => (
                 <li key={item.issue_key} className='flex flex-wrap items-baseline gap-2 text-xs'>
-                  <span className='w-5 tabular-nums text-muted-foreground'>{i + 1}.</span>
+                  <span className='w-5 tabular-nums text-muted-foreground'>{item.rank_position ?? i + 1}.</span>
                   <span className='rounded-md border bg-background px-2 py-1 font-mono'>{item.issue_key}</span>
                   <span className='text-muted-foreground'>stored {item.source_priority ?? 'unknown'}</span>
+                  {typeof item.ranking_evidence?.major_incident_key === 'string' && (
+                    <span className='rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-amber-800'>
+                      {item.ranking_evidence.major_incident_action === 'attach_to_existing' ? 'Incident' : 'Major incident'} {item.ranking_evidence.major_incident_key} · {typeof item.ranking_evidence.incident_ticket_count === 'number' ? item.ranking_evidence.incident_ticket_count : 0} tickets
+                    </span>
+                  )}
                   {item.ranking_reason && (
                     <span className='text-brand-cornflower'>— {item.ranking_reason}</span>
                   )}

@@ -1,0 +1,216 @@
+{
+  "exportFormatVersion": "1.0",
+  "exportedAt": "2026-08-08T00:00:00Z",
+  "rootWorkflowId": "019fd290-bdf0-7009-8c41-7e9d9f2a1b02",
+  "versionExportMode": "all",
+  "workflows": [
+    {
+      "sourceWorkflowId": "019fd290-bdf0-7009-8c41-7e9d9f2a1b02",
+      "sourceDefaultVersionNumber": 1,
+      "versions": [
+        {
+          "sourceVersionId": "019fd290-bdf0-7011-8c41-7e9d9f2a1b11",
+          "versionNumber": 1,
+          "commitMessage": "Deterministic Section 4.1 queue planning workflow",
+          "definition": {
+            "name": "Queue Planner — Read Only",
+            "description": "Run Operator 5 and Operator 6 in parallel, then invoke the new deterministic Queue Planning Triage operator.",
+            "business_functions": [
+              "IT Service Management",
+              "Queue Planning"
+            ],
+            "envs": [],
+            "inputs": [
+              {
+                "name": "sla_targets",
+                "description": "Operator 5 SLA targets.",
+                "type": "textarea",
+                "label": "SLA Targets",
+                "required": false,
+                "default": "VIP: 4h response / 24h resolution; Non-VIP: 8h response / 48h resolution",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "at_risk_window_minutes",
+                "description": "Operator 5 at-risk window in minutes.",
+                "type": "number",
+                "label": "At Risk Window",
+                "required": false,
+                "default": "120",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "default_region",
+                "description": "Operator 5 default region.",
+                "type": "text",
+                "label": "Default Region",
+                "required": false,
+                "default": "Global",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "as_of",
+                "description": "Reference datetime for both evidence operators.",
+                "type": "text",
+                "label": "As Of",
+                "required": false,
+                "default": "2026-07-25T00:00:00Z",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "flood_threshold_count",
+                "description": "Operator 6 incident threshold.",
+                "type": "number",
+                "label": "Flood Threshold",
+                "required": false,
+                "default": "5",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "flood_window_minutes",
+                "description": "Operator 6 correlation window.",
+                "type": "number",
+                "label": "Flood Window",
+                "required": false,
+                "default": "120",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "correlation_confidence_threshold",
+                "description": "Operator 6 confidence threshold.",
+                "type": "number",
+                "label": "Correlation Threshold",
+                "required": false,
+                "default": "0.7",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "include_relationship_types",
+                "description": "Operator 6 relationship types.",
+                "type": "textarea",
+                "label": "Relationship Types",
+                "required": false,
+                "default": "is caused by, relates to",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "recurring_error_min_count",
+                "description": "Operator 6 recurring-error minimum.",
+                "type": "number",
+                "label": "Recurring Error Minimum",
+                "required": false,
+                "default": "20",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "priority_ranking_order",
+                "description": "Six canonical SLA/VIP tiers, in order.",
+                "type": "textarea",
+                "label": "Priority Ranking Order",
+                "required": false,
+                "default": "Breached VIP, Breached Non-VIP, At risk VIP, At risk Non-VIP, Within SLA VIP, Within SLA Non-VIP",
+                "is_hidden": false,
+                "multiple": false
+              },
+              {
+                "name": "max_candidates",
+                "description": "Maximum number of ranked tickets.",
+                "type": "number",
+                "label": "Maximum Candidates",
+                "required": false,
+                "default": "1000",
+                "is_hidden": false,
+                "multiple": false
+              }
+            ],
+            "start_at": [
+              "step_operator_5",
+              "step_operator_6"
+            ],
+            "steps": [
+              {
+                "id": "step_operator_5",
+                "name": "Operator 5 SLA Engine",
+                "description": "Read-only call to Operator 5 SLA Engine.",
+                "services": [
+                  "python"
+                ],
+                "is_human_input_step": false,
+                "subworkflow_call": {
+                  "workflow_id": "019fd290-bdf0-7001-b84c-b24f8a66c031",
+                  "input_mapping_agent_prompt": "Map the exact inputs for Operator 5 SLA Engine into the namespaced payload.",
+                  "output_mapping_agent_prompt": "Preserve the complete output from Operator 5 SLA Engine.",
+                  "input_mapping_code_cell": "import json\n\nasync def step_operator_5_input_mapping():\n    payload = {\n        \"sla_targets\": user_inputs.get(\"sla_targets\"),\n        \"at_risk_window_minutes\": user_inputs.get(\"at_risk_window_minutes\"),\n        \"default_region\": user_inputs.get(\"default_region\"),\n        \"as_of\": user_inputs.get(\"as_of\"),\n        \"issue_keys\": \"\",\n    }\n    globals()[\"_subworkflow_inputs_step_operator_5\"] = payload\n    print(json.dumps(payload, default=str))\n\nawait step_operator_5_input_mapping()\n",
+                  "output_mapping_code_cell": "import json\n\nasync def step_operator_5_output_mapping():\n    raw = globals().get(\"_subworkflow_outputs_step_operator_5\")\n    if not raw:\n        raise ValueError(\"MISSING_OPERATOR_5_OUTPUT\")\n    globals()[\"sla_states_json\"] = raw\n    print(json.dumps(raw, default=str))\n\nawait step_operator_5_output_mapping()\n"
+                },
+                "depends_on": [],
+                "next_steps": []
+              },
+              {
+                "id": "step_operator_6",
+                "name": "Operator 6 Incident Detector",
+                "description": "Read-only call to Operator 6 Incident Detector.",
+                "services": [
+                  "python"
+                ],
+                "is_human_input_step": false,
+                "subworkflow_call": {
+                  "workflow_id": "019fd290-bdf0-7002-992a-58afae950865",
+                  "input_mapping_agent_prompt": "Map the exact inputs for Operator 6 Incident Detector into the namespaced payload.",
+                  "output_mapping_agent_prompt": "Preserve the complete output from Operator 6 Incident Detector.",
+                  "input_mapping_code_cell": "import json\n\nasync def step_operator_6_input_mapping():\n    payload = {\n        \"flood_threshold_count\": user_inputs.get(\"flood_threshold_count\"),\n        \"flood_window_minutes\": user_inputs.get(\"flood_window_minutes\"),\n        \"correlation_confidence_threshold\": user_inputs.get(\"correlation_confidence_threshold\"),\n        \"include_relationship_types\": user_inputs.get(\"include_relationship_types\"),\n        \"recurring_error_min_count\": user_inputs.get(\"recurring_error_min_count\"),\n        \"as_of\": user_inputs.get(\"as_of\"),\n    }\n    globals()[\"_subworkflow_inputs_step_operator_6\"] = payload\n    print(json.dumps(payload, default=str))\n\nawait step_operator_6_input_mapping()\n",
+                  "output_mapping_code_cell": "import json\n\nasync def step_operator_6_output_mapping():\n    raw = globals().get(\"_subworkflow_outputs_step_operator_6\")\n    if not raw:\n        raise ValueError(\"MISSING_OPERATOR_6_OUTPUT\")\n    globals()[\"incident_clusters_json\"] = raw\n    print(json.dumps(raw, default=str))\n\nawait step_operator_6_output_mapping()\n"
+                },
+                "depends_on": [],
+                "next_steps": []
+              },
+              {
+                "id": "step_queue_planner",
+                "name": "new Queue Planning Triage operator",
+                "description": "Read-only call to new Queue Planning Triage operator.",
+                "services": [
+                  "python"
+                ],
+                "is_human_input_step": false,
+                "subworkflow_call": {
+                  "workflow_id": "019fd290-bdf0-7008-8c41-7e9d9f2a1b01",
+                  "input_mapping_agent_prompt": "Map the exact inputs for new Queue Planning Triage operator into the namespaced payload.",
+                  "output_mapping_agent_prompt": "Preserve the complete output from new Queue Planning Triage operator.",
+                  "input_mapping_code_cell": "import json\n\nasync def step_queue_planner_input_mapping():\n    sla = globals().get(\"sla_states_json\")\n    incidents = globals().get(\"incident_clusters_json\")\n    if not sla or not incidents:\n        raise ValueError(\"MISSING_PLANNER_EVIDENCE\")\n    payload = {\n        \"sla_states_json\": sla,\n        \"incident_clusters_json\": incidents,\n        \"priority_ranking_order\": user_inputs.get(\"priority_ranking_order\"),\n        \"max_candidates\": user_inputs.get(\"max_candidates\"),\n    }\n    globals()[\"_subworkflow_inputs_step_queue_planner\"] = payload\n    print(json.dumps(payload, default=str))\n\nawait step_queue_planner_input_mapping()\n",
+                  "output_mapping_code_cell": "import json\n\nasync def step_queue_planner_output_mapping():\n    raw = globals().get(\"_subworkflow_outputs_step_queue_planner\")\n    if not raw:\n        raise ValueError(\"MISSING_QUEUE_PLANNER_OUTPUT\")\n    globals()[\"prioritized_tickets\"] = raw\n    print(json.dumps(raw, default=str))\n\nawait step_queue_planner_output_mapping()\n"
+                },
+                "depends_on": [
+                  "step_operator_5",
+                  "step_operator_6"
+                ],
+                "next_steps": []
+              }
+            ],
+            "pip_packages": [],
+            "integration_overrides": {}
+          }
+        }
+      ]
+    }
+  ],
+  "schedules": [],
+  "integrationsManifest": {
+    "services": [
+      "python",
+      "supabase"
+    ],
+    "envNames": [
+      "SUPABASE_URL",
+      "SUPABASE_TOKEN"
+    ]
+  }
+}

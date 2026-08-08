@@ -28,11 +28,13 @@ from ..services.queue import (
     campaign_payload,
     claim_next,
     classify_run,
-    eligible_snapshots,
+    planned_snapshots,
     reconcile_campaign,
     item_payload,
+    ordered_campaign_items,
     synchronize_campaign,
 )
+from ..services.queue_planner import PlannerUnavailable
 
 router = APIRouter(prefix="/queue", tags=["Ticket Queue"])
 
@@ -135,20 +137,51 @@ async def preview_campaign(body: PreviewRequest, db: Session = Depends(get_db)):
         QueueCampaignStatus.PAUSED.value,
     }:
         raise HTTPException(status_code=409, detail="A queue campaign is already active")
+    # Plan before touching an existing preview. A failed v2 planner must be a
+    # safe read-only error, not an accidental loss of the last reviewable batch.
+    try:
+        snapshots, planner = await planned_snapshots(db, body.limit)
+    except PlannerUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
     if current and current.status == QueueCampaignStatus.PREVIEW.value:
         current.status = QueueCampaignStatus.CANCELLED.value
         db.commit()
 
-    snapshots = await eligible_snapshots(db, body.limit)
     campaign = QueueCampaign(
         name=body.name or f"Ticket batch {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}",
         source=body.source,
         status=QueueCampaignStatus.PREVIEW.value,
         batch_limit=body.limit,
+        planner_mode=planner.mode,
+        planner_run_id=planner.run_id,
+        planner_generated_at=planner.generated_at,
+        planner_effective_as_of=planner.effective_as_of,
+        planner_stale=planner.stale,
+        planner_policy_snapshot=planner.policy_snapshot,
     )
     db.add(campaign)
     db.flush()
     for snapshot in snapshots:
+        ranking_evidence = snapshot.get("ranking_evidence")
+        if ranking_evidence is None:
+            ranking_evidence = {
+                key: snapshot[key]
+                for key in (
+                    "sla_status",
+                    "vip",
+                    "priority_rank",
+                    "rank_position",
+                    "ranked_by",
+                    "ranking_reason",
+                    "assignment_group",
+                    "major_incident_key",
+                    "major_incident_action",
+                    "incident_ticket_count",
+                    "incident_vip_count",
+                )
+                if snapshot.get(key) is not None
+            }
         db.add(
             QueueItem(
                 campaign_id=campaign.id,
@@ -164,13 +197,15 @@ async def preview_campaign(body: PreviewRequest, db: Session = Depends(get_db)):
                 priority_rank=snapshot.get("priority_rank"),
                 ranked_by=snapshot.get("ranked_by"),
                 ranking_reason=snapshot.get("ranking_reason"),
+                rank_position=snapshot.get("rank_position"),
+                ranking_evidence=ranking_evidence or None,
             )
         )
     db.commit()
     db.refresh(campaign)
     return {
         "campaign": campaign_payload(db, campaign),
-        "items": [item_payload(item) for item in campaign.items],
+        "items": [item_payload(item) for item in ordered_campaign_items(campaign)],
         "warning": "Preview only; no Supervity run or Supabase write has started.",
     }
 
@@ -221,7 +256,7 @@ def get_campaign(campaign_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Campaign not found")
     return {
         "campaign": campaign_payload(db, campaign),
-        "items": [item_payload(item) for item in campaign.items],
+        "items": [item_payload(item) for item in ordered_campaign_items(campaign)],
     }
 
 
@@ -389,7 +424,18 @@ def list_items(
         records = [record for record in records if record.get("outcome") == outcome]
     if search:
         records = [record for record in records if search.strip().lower() in record["issue_key"].lower()]
-    records.sort(key=lambda record: record.get("created_at") or "", reverse=True)
+    # Queue history is presented in the frozen planner order within the newest
+    # campaign. Legacy/manual rows without a rank remain deterministic at the
+    # end rather than being reordered by response timing.
+    records.sort(
+        key=lambda record: (
+            0 if record.get("history_source") == "queue" else 1,
+            -int(record.get("campaign_id") or 0),
+            record.get("rank_position") is None,
+            record.get("rank_position") if record.get("rank_position") is not None else 10**9,
+            int(record.get("id") or 0),
+        )
+    )
     total = len(records)
     records = records[(page - 1) * page_size : page * page_size]
     return {

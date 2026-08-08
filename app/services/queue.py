@@ -8,6 +8,7 @@ and starts one explicit-target run at a time.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from datetime import datetime, timezone
 from typing import Any
@@ -29,7 +30,14 @@ from ..models.command_center import (
 from . import supabase
 from .auto_client import AutoClient, AutoError
 from .operator_steps import DONE_STEP_STATUSES, canonical_step_map
-from .queue_planner import rank_index, ranked_backlog, ranking_reason
+from .queue_planner import (
+    PlannerResult,
+    PlannerUnavailable,
+    planner_result,
+    rank_index,
+    ranked_backlog,
+    ranking_reason,
+)
 from .reconciliation import VERIFICATION_FAILED, verify_ticket
 
 # A delegating step's stored output holds only a link to the operator's own run;
@@ -89,8 +97,14 @@ def _snapshot(row: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-async def eligible_snapshots(db: Session, limit: int = 10) -> list[dict[str, Any]]:
-    """Read and rank eligible tickets without changing Supabase."""
+async def _eligible_snapshots_from_ranking(
+    db: Session,
+    limit: int,
+    ranking: dict[str, dict[str, Any]],
+    *,
+    default_ranked_by: str = "operator_1",
+) -> list[dict[str, Any]]:
+    """Filter live eligibility after a planner has ranked the backlog."""
     limit = max(1, min(int(limit), 100))
 
     # Fetch enough of the backlog to rank meaningfully.
@@ -175,8 +189,6 @@ async def eligible_snapshots(db: Session, limit: int = 10) -> list[dict[str, Any
     # Operator 1 ranks on (SLA status, VIP), which is the order the queue
     # planning note asks for, and asking it keeps the preview traceable to
     # operator evidence rather than to a constant in this file.
-    ranking = rank_index(await ranked_backlog(db))
-
     def sort_key(item: dict[str, Any]) -> tuple[int, int, str, str]:
         evidence = ranking.get(item["issue_key"])
         # Unranked tickets sort after ranked ones rather than being dropped:
@@ -199,12 +211,64 @@ async def eligible_snapshots(db: Session, limit: int = 10) -> list[dict[str, Any
         item["sla_status"] = (evidence or {}).get("sla_status")
         item["vip"] = (evidence or {}).get("vip")
         item["priority_rank"] = (evidence or {}).get("priority_rank")
-        item["ranked_by"] = "operator_1" if evidence else "source_priority"
+        item["ranked_by"] = (
+            (evidence or {}).get("ranked_by") or default_ranked_by
+            if evidence
+            else "source_priority"
+        )
+        for field in (
+            "assignment_group",
+            "major_incident_key",
+            "major_incident_action",
+            "incident_ticket_count",
+            "incident_vip_count",
+            "source_priority",
+            "source_status",
+            "source_updated_at",
+        ):
+            if evidence and evidence.get(field) is not None:
+                item[field] = evidence[field]
+        item["rank_position"] = (
+            int(evidence["position"]) + 1 if evidence is not None else None
+        )
+        item["ranking_evidence"] = dict(evidence) if evidence else None
         item["ranking_reason"] = ranking_reason(evidence)
         result.append(item)
         if len(result) >= limit:
             break
     return result
+
+
+async def eligible_snapshots(db: Session, limit: int = 10) -> list[dict[str, Any]]:
+    """Legacy-compatible selection helper used by existing unit tests/callers."""
+    return await _eligible_snapshots_from_ranking(
+        db, limit, rank_index(await ranked_backlog(db))
+    )
+
+
+async def planned_snapshots(
+    db: Session,
+    limit: int = 10,
+    force_refresh: bool = False,
+) -> tuple[list[dict[str, Any]], PlannerResult]:
+    """Return filtered preview rows plus the planner evidence that ranked them."""
+    mode = os.getenv("QUEUE_PLANNER_MODE", "legacy").strip().lower()
+    if mode == "legacy":
+        result = PlannerResult(
+            tickets=await ranked_backlog(db, force_refresh=force_refresh),
+            mode="legacy",
+        )
+    else:
+        result = await planner_result(db, force_refresh=force_refresh)
+    ranked_by = {
+        "queue_planner": "queue_planner",
+        "queue_planner_stale": "queue_planner_stale",
+    }.get(result.mode, "operator_1")
+    snapshots = await _eligible_snapshots_from_ranking(
+        db, limit, rank_index(result.tickets, ranked_by=ranked_by),
+        default_ranked_by=ranked_by,
+    )
+    return snapshots, result
 
 
 def campaign_counts(db: Session, campaign: QueueCampaign) -> dict[str, int]:
@@ -231,8 +295,26 @@ def campaign_payload(db: Session, campaign: QueueCampaign) -> dict[str, Any]:
         "started_at": campaign.started_at,
         "completed_at": campaign.completed_at,
         "last_tick_at": campaign.last_tick_at,
+        "planner_mode": campaign.planner_mode,
+        "planner_run_id": campaign.planner_run_id,
+        "planner_generated_at": campaign.planner_generated_at,
+        "planner_effective_as_of": campaign.planner_effective_as_of,
+        "planner_stale": bool(campaign.planner_stale),
+        "planner_policy_snapshot": campaign.planner_policy_snapshot,
         "counts": campaign_counts(db, campaign),
     }
+
+
+def ordered_campaign_items(campaign: QueueCampaign) -> list[QueueItem]:
+    """Return a frozen preview in planner order, with legacy rows last."""
+    return sorted(
+        campaign.items,
+        key=lambda item: (
+            item.rank_position is None,
+            item.rank_position if item.rank_position is not None else 10**9,
+            item.id,
+        ),
+    )
 
 
 def item_payload(item: QueueItem) -> dict[str, Any]:
@@ -265,6 +347,8 @@ def item_payload(item: QueueItem) -> dict[str, Any]:
         "priority_rank": item.priority_rank,
         "ranked_by": item.ranked_by,
         "ranking_reason": item.ranking_reason,
+        "rank_position": item.rank_position,
+        "ranking_evidence": item.ranking_evidence,
     }
 
 
