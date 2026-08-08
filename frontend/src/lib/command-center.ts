@@ -163,6 +163,21 @@ export interface QueueItem {
   started_at: string | null
   completed_at: string | null
   history_source?: 'queue' | 'manual'
+
+  // `outcome` says which path the agent took. `verification` says whether the
+  // service-desk ticket actually changed. They are separate on purpose: a
+  // campaign once reported ITSM-2003 as human_approved while Supabase still
+  // held it at "Waiting for support" with nothing written.
+  verification?: 'verified' | 'verification_failed' | 'not_applicable' | 'unknown' | null
+  verification_detail?: { reason?: string; mismatches?: unknown[] } | null
+  verified_at?: string | null
+
+  // Why the ticket sits where it does in the batch, frozen at preview time.
+  sla_status?: string | null
+  vip?: boolean | null
+  priority_rank?: number | null
+  ranked_by?: 'operator_1' | 'source_priority' | null
+  ranking_reason?: string | null
 }
 
 export interface QueueCampaign {
