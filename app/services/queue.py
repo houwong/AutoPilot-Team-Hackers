@@ -222,9 +222,6 @@ async def _eligible_snapshots_from_ranking(
             "major_incident_action",
             "incident_ticket_count",
             "incident_vip_count",
-            "source_priority",
-            "source_status",
-            "source_updated_at",
         ):
             if evidence and evidence.get(field) is not None:
                 item[field] = evidence[field]

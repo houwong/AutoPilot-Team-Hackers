@@ -95,6 +95,7 @@ async def test_planned_snapshots_returns_v2_evidence_metadata(db, monkeypatch):
                     "issue_key": "ITSM-PLANNED",
                     "priority_rank": 1,
                     "rank_position": 1,
+                    "source_priority": "Highest",
                     "sla_status": "Breached",
                     "vip": True,
                     "major_incident_key": "INC-9001",
@@ -114,6 +115,7 @@ async def test_planned_snapshots_returns_v2_evidence_metadata(db, monkeypatch):
 
     assert snapshots[0]["ranked_by"] == "queue_planner"
     assert snapshots[0]["major_incident_key"] == "INC-9001"
+    assert snapshots[0]["source_priority"] == "Low"
     assert result.run_id == "planner-run"
 
 
