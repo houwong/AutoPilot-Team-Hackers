@@ -15,8 +15,10 @@ const operatorMatch = operatorSource.match(/OPERATOR_CODE = r'''([\s\S]*)'''\s*$
 if (!operatorMatch) throw new Error('Could not extract OPERATOR_CODE source')
 const operatorCode = operatorMatch[1]
 
-const NEW_OPERATOR_ID = '019fd290-bdf0-7008-8c41-7e9d9f2a1b01'
-const QUEUE_PLANNER_ID = '019fd290-bdf0-7009-8c41-7e9d9f2a1b02'
+// Auto may assign a fresh workflow id on import. Re-run with these variables
+// after each import so the planner points at the exact captured IDs.
+const NEW_OPERATOR_ID = process.env.AUTO_WF_OP1_PLANNER?.trim() || '019fd290-bdf0-7008-8c41-7e9d9f2a1b01'
+const QUEUE_PLANNER_ID = process.env.AUTO_WF_QUEUE_PLANNER?.trim() || '019fd290-bdf0-7009-8c41-7e9d9f2a1b02'
 const OP5_ID = '019fd290-bdf0-7001-b84c-b24f8a66c031'
 const OP6_ID = '019fd290-bdf0-7002-992a-58afae950865'
 

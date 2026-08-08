@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
 from typing import Any
 
-NEW_OPERATOR_ID = "019fd290-bdf0-7008-8c41-7e9d9f2a1b01"
-QUEUE_PLANNER_ID = "019fd290-bdf0-7009-8c41-7e9d9f2a1b02"
+NEW_OPERATOR_ID = os.getenv("AUTO_WF_OP1_PLANNER", "").strip() or "019fd290-bdf0-7008-8c41-7e9d9f2a1b01"
+QUEUE_PLANNER_ID = os.getenv("AUTO_WF_QUEUE_PLANNER", "").strip() or "019fd290-bdf0-7009-8c41-7e9d9f2a1b02"
 OLD_OPERATOR_ID = "019fd826-9991-7003-84a1-9bac5f1eda3d"
 OP5_ID = "019fd290-bdf0-7001-b84c-b24f8a66c031"
 OP6_ID = "019fd290-bdf0-7002-992a-58afae950865"
